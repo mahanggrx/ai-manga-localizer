@@ -7,7 +7,7 @@
 ## 已实现
 
 - `doctor`：只读检查 NVIDIA GPU、Koharu 版本/引擎目录和模型锁，不下载、不安装、不启动服务。
-- `translate`：支持图片目录、ZIP、CBZ；每次创建唯一输出目录，驱动 Koharu 分阶段处理，按阅读页序分块并携带重叠上下文，执行 OCR 回退、翻译重试、可选文字云回退并导出图片、CBZ、KHR、manifest 和报告。重试后仍有严格阻断项的页面不会进入修复与排字，而是按原顺序回填原图，避免异常译文破坏画面。
+- `translate`：支持图片目录、ZIP、CBZ；每次创建唯一输出目录，驱动 Koharu 分阶段处理，按阅读页序分块并携带重叠上下文，执行 OCR 回退、翻译重试、可选文字云回退并导出图片、CBZ、KHR、manifest 和报告。重试后仍有严格阻断项的页面不会进入修复与排字，而是按原顺序回填原图，避免异常译文破坏画面。零检测页、当前无法保证只加小注的纯艺术字页，以及文本分布和 QA 同时呈现结构风险的首尾页也会失败关闭；报告只记录页面 ID 和保护原因码。
 - 原图边界：`translate` 无条件要求 Koharu 使用 `localhost`、`127.0.0.1` 或 `::1`。即使诊断配置允许远程 Koharu，也不会把漫画图片上传到远程地址。
 - `benchmark`：读取私有金标集和离线候选结果，计算检测召回率、OCR CER、语义可用率、术语一致性、免编辑页面率、修复排字评分、指定样本不拒译率和显存硬门槛，机械选择模型并生成锁文件。
 - ZIP/CBZ 防护：拒绝路径穿越、绝对路径、盘符、ADS、符号链接、加密、ZIP64、未知压缩、CRC 错误和压缩炸弹式超限。
@@ -51,7 +51,7 @@ node src/cli.ts benchmark C:/manga/golden-private --out C:/manga/benchmark-outpu
 - `editable-psd.psd` 或 `editable-psd.zip`：仅在 `--psd` 时生成。
 - `recovery-partial.khr`、`recovery-rendered/`、`recovery-partial.cbz`：仅在流水线失败且 Koharu 仍能导出部分成果时尽力生成。
 
-`report.json.renderSafety` 会记录正常渲染页数和因阻断 QA 而保留原图的页。`completed-with-warnings` 只表示产物可恢复且结构完整，不表示已经达到发布质量；只要存在保留页、残留假名、溢出或其他错误级 QA，就仍需复检。
+`report.json.renderSafety` 会记录正常渲染页数、保留原图的页面及其原因码，包括阻断 QA、零检测、纯艺术字和高风险边界页。`completed-with-warnings` 只表示产物可恢复且结构完整，不表示已经达到发布质量；只要存在保留页、残留假名、溢出或其他错误级 QA，就仍需复检。
 
 ## 金标格式
 

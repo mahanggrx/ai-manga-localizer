@@ -5,7 +5,7 @@ import { asLocalizerError, LocalizerError } from "./errors.ts";
 import { createUniqueDirectory, safeSlug, writeExclusive, writeJsonExclusive } from "./file-utils.ts";
 import { KoharuClient, selectEngine, selectedPipelineEngine } from "./koharu-client.ts";
 import { logger, type SafeLogger } from "./logger.ts";
-import { applyChapterQa, buildGlossaryPrompt, buildRetryPrompt, chunkPageIds, deriveGlossary, extractPageIds, extractRegionsFromScene, lowOcrPages, markRenderBlockedPages, qaSummary, renderBlockedPages, translationRetryPages } from "./quality.ts";
+import { applyChapterQa, buildGlossaryPrompt, buildRetryPrompt, chunkPageIds, deriveGlossary, extractPageIds, extractRegionsFromScene, lowOcrPages, markRenderBlockedPages, qaSummary, renderProtectionPlan, translationRetryPages } from "./quality.ts";
 import { assertSchema } from "./schema.ts";
 import type { ChapterManifest, InputImage, JsonObject, JsonValue, LocalizerConfig, RegionRecord, RunReport, StageReport } from "./types.ts";
 
@@ -319,7 +319,8 @@ export async function runTranslate(config: LocalizerConfig, options: TranslateOp
       }
     }
 
-    const preservedPages = renderBlockedPages(regions);
+    const preservationReasons = renderProtectionPlan(orderedPages, regions, config.quality.structuralProtection);
+    const preservedPages = preservationReasons.map((item) => item.pageId);
     const preservedPageSet = new Set(preservedPages);
     const renderPages = orderedPages.filter((pageId) => !preservedPageSet.has(pageId));
     regions = markRenderBlockedPages(regions, preservedPageSet);
@@ -327,9 +328,11 @@ export async function runTranslate(config: LocalizerConfig, options: TranslateOp
       preservedPageCount: preservedPages.length,
       renderedPageCount: renderPages.length,
       preservedPages,
+      preservationReasons,
     };
     await executeStage(report, checkpoints, "render-safety-gate", async (item) => {
-      if (preservedPages.length > 0) item.warnings.push("PAGES_PRESERVED_AFTER_BLOCKING_QA");
+      if (preservationReasons.some((reason) => reason.codes.includes("BLOCKING_REGION_QA"))) item.warnings.push("PAGES_PRESERVED_AFTER_BLOCKING_QA");
+      if (preservationReasons.some((reason) => reason.codes.some((code) => code !== "BLOCKING_REGION_QA"))) item.warnings.push("STRUCTURAL_PAGES_PRESERVED");
     });
 
     await executeStage(report, checkpoints, "release-llm", async (item) => {

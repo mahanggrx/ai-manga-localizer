@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DEFAULT_CONFIG } from "../src/config.ts";
-import { applyChapterQa, assessRegion, buildRetryPrompt, chunkPageIds, classifyRole, containsJapaneseKana, deriveGlossary, extractPageIds, extractRegionsFromScene, looksLikeRefusal, markRenderBlockedPages, renderBlockedPages, translationRetryPages } from "../src/quality.ts";
+import { applyChapterQa, assessRegion, buildRetryPrompt, chunkPageIds, classifyRole, containsJapaneseKana, deriveGlossary, extractPageIds, extractRegionsFromScene, looksLikeRefusal, markRenderBlockedPages, renderBlockedPages, renderProtectionPlan, translationRetryPages } from "../src/quality.ts";
 import type { JsonObject, RegionRecord } from "../src/types.ts";
 
 test("scene extractor supports direct node and semantic component shapes", () => {
@@ -148,4 +148,65 @@ test("render safety preserves only strict blockers and compound overflow failure
   assert.equal(marked[0].qaFlags.some((flag) => flag.code === "RENDERING_SKIPPED_FOR_PAGE"), false);
   assert.equal(marked[1].qaFlags.filter((flag) => flag.code === "RENDERING_SKIPPED_FOR_PAGE").length, 1);
   assert.equal(markRenderBlockedPages(marked, new Set(["compound-overflow"]))[1].qaFlags.filter((flag) => flag.code === "RENDERING_SKIPPED_FOR_PAGE").length, 1);
+});
+
+test("structural render protection fails closed for risky boundary, empty, and artistic-only pages", () => {
+  const make = (pageId: string, codes: string[] = [], policy: RegionRecord["policy"] = "replace", id = "1"): RegionRecord => ({
+    schemaVersion: 1,
+    id: `${pageId}-${id}`,
+    pageId,
+    order: Number(id),
+    role: policy === "preserve-with-annotation" ? "sfx" : "dialogue",
+    policy,
+    sourceText: "source",
+    translatedText: "target",
+    ocrCandidates: [],
+    translationCandidates: [],
+    qaFlags: codes.map((code) => ({ code, severity: "warning", retryable: true })),
+  });
+  const pageIds = ["cover", "story", "art", "blank", "credits"];
+  const regions = [
+    make("cover", ["LOW_OCR_CONFIDENCE"]),
+    make("story", ["JAPANESE_KANA_REMAINS"]),
+    make("art", [], "preserve-with-annotation"),
+    ...Array.from({ length: 12 }, (_, index) => make("credits", index < 6 ? ["LOW_OCR_CONFIDENCE"] : [], "replace", String(index))),
+  ];
+  assert.deepEqual(renderProtectionPlan(pageIds, regions, DEFAULT_CONFIG.quality.structuralProtection), [
+    { pageId: "cover", codes: ["RISKY_BOUNDARY_PAGE"] },
+    { pageId: "story", codes: ["BLOCKING_REGION_QA"] },
+    { pageId: "art", codes: ["ARTISTIC_TEXT_ONLY_PAGE"] },
+    { pageId: "blank", codes: ["NO_TEXT_REGIONS_DETECTED"] },
+    { pageId: "credits", codes: ["RISKY_BOUNDARY_PAGE"] },
+  ]);
+  assert.deepEqual(renderProtectionPlan(["single"], [make("single")], DEFAULT_CONFIG.quality.structuralProtection), []);
+});
+
+test("structural render protection rejects ambiguous scene-to-region mappings", () => {
+  const region: RegionRecord = {
+    schemaVersion: 1,
+    id: "region-orphan",
+    pageId: "outside-scene",
+    order: 0,
+    role: "dialogue",
+    policy: "replace",
+    sourceText: "source",
+    translatedText: "target",
+    ocrCandidates: [],
+    translationCandidates: [],
+    qaFlags: [],
+  };
+  const expected = (error: unknown): boolean => (
+    error instanceof Error
+    && "code" in error
+    && error.code === "RENDER_PROTECTION_PAGE_MAPPING_INVALID"
+  );
+
+  assert.throws(
+    () => renderProtectionPlan(["duplicate", "duplicate"], [], DEFAULT_CONFIG.quality.structuralProtection),
+    expected,
+  );
+  assert.throws(
+    () => renderProtectionPlan(["inside-scene"], [region], DEFAULT_CONFIG.quality.structuralProtection),
+    expected,
+  );
 });

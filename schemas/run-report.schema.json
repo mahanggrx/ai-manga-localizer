@@ -19,11 +19,23 @@
     "cloudRegions": { "type": "array" },
     "renderSafety": {
       "type": "object",
-      "required": ["preservedPageCount", "renderedPageCount", "preservedPages"],
+      "required": ["preservedPageCount", "renderedPageCount", "preservedPages", "preservationReasons"],
       "properties": {
         "preservedPageCount": { "type": "integer", "minimum": 0 },
         "renderedPageCount": { "type": "integer", "minimum": 0 },
-        "preservedPages": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+        "preservedPages": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "preservationReasons": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["pageId", "codes"],
+            "properties": {
+              "pageId": { "type": "string", "minLength": 1 },
+              "codes": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 }, "uniqueItems": true }
+            },
+            "additionalProperties": false
+          }
+        }
       },
       "additionalProperties": false
     },

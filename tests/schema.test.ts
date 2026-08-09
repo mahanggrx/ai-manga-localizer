@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DEFAULT_CONFIG } from "../src/config.ts";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { DEFAULT_CONFIG, loadConfig } from "../src/config.ts";
 import { assertSchema, loadSchema, validateSchema } from "../src/schema.ts";
 
 test("default config satisfies its public JSON schema", async () => {
@@ -28,4 +31,25 @@ test("config schema requires a local primary target and complete candidate prove
     ocrCandidates: [{ engine: "ocr", text: "text", selected: true }], translationCandidates: [], qaFlags: [],
   };
   assert.ok(validateSchema(invalidRegion, regionSchema).some((error) => error.includes("selectionReason")));
+});
+
+test("config rejects overlapping sparse and dense structural thresholds", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "manga-localizer-config-"));
+  const configPath = path.join(directory, "invalid.json");
+  const invalid = {
+    ...DEFAULT_CONFIG,
+    quality: {
+      ...DEFAULT_CONFIG.quality,
+      structuralProtection: {
+        ...DEFAULT_CONFIG.quality.structuralProtection,
+        boundarySparseRegionLimit: 12,
+        boundaryDenseRegionThreshold: 12,
+      },
+    },
+  };
+  await writeFile(configPath, JSON.stringify(invalid));
+  await assert.rejects(
+    () => loadConfig(configPath),
+    (error: unknown) => (error as { code?: string }).code === "CONFIG_STRUCTURAL_PROTECTION_INVALID",
+  );
 });

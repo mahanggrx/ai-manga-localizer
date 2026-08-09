@@ -18,7 +18,14 @@
     "minTranslationLengthRatio": 0.25,
     "maxRetries": 2,
     "sfxMaxCharacters": 8,
-    "minGlyphPixels": 20
+    "minGlyphPixels": 20,
+    "structuralProtection": {
+      "preserveEmptyPages": true,
+      "preserveArtisticOnlyPages": true,
+      "boundarySparseRegionLimit": 2,
+      "boundaryDenseRegionThreshold": 12,
+      "boundaryRiskRatio": 0.5
+    }
   },
   "translation": {
     "targetLanguage": "zh-CN",

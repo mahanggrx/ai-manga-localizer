@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { LocalizerError } from "./errors.ts";
 import type { BoundingBox, JsonObject, JsonValue, LocalizerConfig, QaFlag, RegionRecord } from "./types.ts";
 
 interface PartialRegion {
@@ -291,6 +292,72 @@ function blocksSafeRendering(region: RegionRecord): boolean {
 
 export function renderBlockedPages(regions: RegionRecord[]): string[] {
   return [...new Set(regions.filter(blocksSafeRendering).map((region) => region.pageId))];
+}
+
+const STRUCTURAL_RISK_CODES = new Set([
+  "LOW_OCR_CONFIDENCE",
+  "OCR_TEXT_ANOMALY",
+  "MISSING_TRANSLATION",
+  "TRANSLATION_REFUSAL",
+  "JAPANESE_KANA_REMAINS",
+  "SIGNIFICANT_TOKEN_LOST",
+  "TRANSLATION_TOO_LONG",
+  "TRANSLATION_TOO_SHORT",
+  "TEXT_OVERFLOW_RISK",
+  "SUSPICIOUS_DUPLICATE_TRANSLATION",
+]);
+
+export interface PagePreservationReason {
+  pageId: string;
+  codes: string[];
+}
+
+export function renderProtectionPlan(
+  pageIds: string[],
+  regions: RegionRecord[],
+  config: LocalizerConfig["quality"]["structuralProtection"],
+): PagePreservationReason[] {
+  const pageIdSet = new Set(pageIds);
+  if (pageIdSet.size !== pageIds.length) {
+    throw new LocalizerError(
+      "RENDER_PROTECTION_PAGE_MAPPING_INVALID",
+      "Render protection requires unique ordered page ids",
+    );
+  }
+  if (regions.some((region) => !pageIdSet.has(region.pageId))) {
+    throw new LocalizerError(
+      "RENDER_PROTECTION_PAGE_MAPPING_INVALID",
+      "Render protection found a region outside the ordered scene pages",
+    );
+  }
+
+  const strictPages = new Set(renderBlockedPages(regions));
+  const regionsByPage = new Map<string, RegionRecord[]>();
+  for (const pageId of pageIds) regionsByPage.set(pageId, []);
+  for (const region of regions) regionsByPage.get(region.pageId)?.push(region);
+
+  return pageIds.flatMap((pageId, index) => {
+    const pageRegions = regionsByPage.get(pageId) ?? [];
+    const codes: string[] = [];
+    if (strictPages.has(pageId)) codes.push("BLOCKING_REGION_QA");
+    if (config.preserveEmptyPages && pageRegions.length === 0) codes.push("NO_TEXT_REGIONS_DETECTED");
+    if (
+      config.preserveArtisticOnlyPages
+      && pageRegions.length > 0
+      && pageRegions.every((region) => region.policy === "preserve-with-annotation")
+    ) {
+      codes.push("ARTISTIC_TEXT_ONLY_PAGE");
+    }
+
+    const boundary = index === 0 || index === pageIds.length - 1;
+    if (boundary && pageRegions.length > 0) {
+      const riskyRegions = pageRegions.filter((region) => region.qaFlags.some((flag) => STRUCTURAL_RISK_CODES.has(flag.code))).length;
+      const sparseAndAllRisky = pageRegions.length <= config.boundarySparseRegionLimit && riskyRegions === pageRegions.length;
+      const denseAndMostlyRisky = pageRegions.length >= config.boundaryDenseRegionThreshold && riskyRegions / pageRegions.length >= config.boundaryRiskRatio;
+      if (sparseAndAllRisky || denseAndMostlyRisky) codes.push("RISKY_BOUNDARY_PAGE");
+    }
+    return codes.length > 0 ? [{ pageId, codes }] : [];
+  });
 }
 
 export function markRenderBlockedPages(regions: RegionRecord[], blockedPages: Set<string>): RegionRecord[] {

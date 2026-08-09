@@ -26,6 +26,13 @@ export const DEFAULT_CONFIG: LocalizerConfig = {
     maxRetries: 2,
     sfxMaxCharacters: 8,
     minGlyphPixels: 20,
+    structuralProtection: {
+      preserveEmptyPages: true,
+      preserveArtisticOnlyPages: true,
+      boundarySparseRegionLimit: 2,
+      boundaryDenseRegionThreshold: 12,
+      boundaryRiskRatio: 0.5,
+    },
   },
   translation: {
     targetLanguage: "zh-CN",
@@ -71,6 +78,9 @@ export async function loadConfig(configPath?: string): Promise<LocalizerConfig> 
   await assertSchema("localizer-config.schema.json", config);
   if (config.translation.contextOverlapPages >= config.translation.chunkPages) {
     throw new LocalizerError("CONFIG_CHUNK_OVERLAP_INVALID", "translation.contextOverlapPages must be smaller than translation.chunkPages");
+  }
+  if (config.quality.structuralProtection.boundarySparseRegionLimit >= config.quality.structuralProtection.boundaryDenseRegionThreshold) {
+    throw new LocalizerError("CONFIG_STRUCTURAL_PROTECTION_INVALID", "quality.structuralProtection.boundarySparseRegionLimit must be smaller than boundaryDenseRegionThreshold");
   }
   return config;
 }

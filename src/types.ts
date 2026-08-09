@@ -93,6 +93,7 @@ export interface RunReport {
     preservedPageCount: number;
     renderedPageCount: number;
     preservedPages: string[];
+    preservationReasons: Array<{ pageId: string; codes: string[] }>;
   };
   stages: StageReport[];
   qaSummary: Record<string, number>;
@@ -152,6 +153,13 @@ export interface LocalizerConfig {
     maxRetries: number;
     sfxMaxCharacters: number;
     minGlyphPixels: number;
+    structuralProtection: {
+      preserveEmptyPages: boolean;
+      preserveArtisticOnlyPages: boolean;
+      boundarySparseRegionLimit: number;
+      boundaryDenseRegionThreshold: number;
+      boundaryRiskRatio: number;
+    };
   };
   translation: {
     targetLanguage: "zh-CN";

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "run-report.schema.json",
+  "title": "RunReport",
+  "type": "object",
+  "required": ["schemaVersion", "runId", "status", "startedAt", "inputKind", "inputPageCount", "outputDirectory", "cloudAllowed", "cloudRegions", "stages", "qaSummary", "artifacts"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "runId": { "type": "string", "minLength": 1 },
+    "status": { "type": "string", "enum": ["running", "completed", "completed-with-warnings", "failed"] },
+    "startedAt": { "type": "string", "minLength": 1 },
+    "finishedAt": { "type": "string", "minLength": 1 },
+    "inputKind": { "type": "string", "enum": ["directory", "zip", "cbz"] },
+    "inputPageCount": { "type": "integer", "minimum": 0 },
+    "outputDirectory": { "type": "string", "minLength": 1 },
+    "koharuVersion": { "type": "string" },
+    "gpu": { "type": "object" },
+    "cloudAllowed": { "type": "boolean" },
+    "cloudRegions": { "type": "array" },
+    "renderSafety": {
+      "type": "object",
+      "required": ["preservedPageCount", "renderedPageCount", "preservedPages"],
+      "properties": {
+        "preservedPageCount": { "type": "integer", "minimum": 0 },
+        "renderedPageCount": { "type": "integer", "minimum": 0 },
+        "preservedPages": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+      },
+      "additionalProperties": false
+    },
+    "stages": { "type": "array" },
+    "qaSummary": { "type": "object" },
+    "artifacts": { "type": "object" },
+    "failure": { "type": "object" }
+  },
+  "additionalProperties": false
+}

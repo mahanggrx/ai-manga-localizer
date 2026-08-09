@@ -1,0 +1,17 @@
+node_modules/
+dist/
+coverage/
+.localizer-cache/
+.local/
+private-smoke/
+旧内容/
+localizer.config.json
+models.lock.json
+benchmark-results-*/
+translation-results-*/
+*.khr
+*.psd
+*.cbz
+*.zip
+golden-private/
+*.log

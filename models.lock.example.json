@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-08-09T00:00:00.000Z",
+  "benchmarkId": "not-yet-benchmarked",
+  "koharuVersion": "0.61.2",
+  "models": [
+    {
+      "id": "sakura-galtransl-7b-v3.7",
+      "family": "Sakura-GalTransl-7B",
+      "version": "3.7",
+      "quantization": "IQ4_XS",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "license": "CC-BY-NC-SA-4.0",
+      "role": "translation",
+      "selected": true
+    }
+  ]
+}

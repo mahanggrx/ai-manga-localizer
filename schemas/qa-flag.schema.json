@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "qa-flag.schema.json",
+  "title": "QaFlag",
+  "type": "object",
+  "required": ["code", "severity", "retryable"],
+  "properties": {
+    "code": { "type": "string", "minLength": 1 },
+    "severity": { "type": "string", "enum": ["info", "warning", "error"] },
+    "regionId": { "type": "string", "minLength": 1 },
+    "pageId": { "type": "string", "minLength": 1 },
+    "detail": { "type": "string" },
+    "retryable": { "type": "boolean" }
+  },
+  "additionalProperties": false
+}
+

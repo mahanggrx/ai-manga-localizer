@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "localizer-config.schema.json",
+  "title": "LocalizerConfig",
+  "type": "object",
+  "required": ["schemaVersion", "koharu", "quality", "translation", "archives", "modelsLockPath"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "koharu": {
+      "type": "object",
+      "required": ["baseUrl", "requiredVersion", "requestTimeoutMs", "operationTimeoutMs", "allowRemote"],
+      "properties": {
+        "baseUrl": { "type": "string", "pattern": "^https?://" },
+        "requiredVersion": { "type": "string", "minLength": 1 },
+        "requestTimeoutMs": { "type": "integer", "minimum": 100 },
+        "operationTimeoutMs": { "type": "integer", "minimum": 1000 },
+        "allowRemote": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "quality": {
+      "type": "object",
+      "required": ["profile", "primaryOcrHints", "fallbackOcrHints", "primaryInpainterHints", "fallbackInpainterHints", "ocrConfidenceThreshold", "maxTranslationLengthRatio", "minTranslationLengthRatio", "maxRetries", "sfxMaxCharacters", "minGlyphPixels"],
+      "properties": {
+        "profile": { "const": "quality-local" },
+        "primaryOcrHints": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "fallbackOcrHints": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "primaryInpainterHints": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "fallbackInpainterHints": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "ocrConfidenceThreshold": { "type": "number", "minimum": 0, "maximum": 1 },
+        "maxTranslationLengthRatio": { "type": "number", "minimum": 1 },
+        "minTranslationLengthRatio": { "type": "number", "minimum": 0, "maximum": 1 },
+        "maxRetries": { "type": "integer", "minimum": 0, "maximum": 5 },
+        "sfxMaxCharacters": { "type": "integer", "minimum": 1 },
+        "minGlyphPixels": { "type": "integer", "minimum": 4 }
+      },
+      "additionalProperties": false
+    },
+    "translation": {
+      "type": "object",
+      "required": ["targetLanguage", "localTarget", "systemPrompt", "retryPrompt", "chunkPages", "contextOverlapPages"],
+      "properties": {
+        "targetLanguage": { "const": "zh-CN" },
+        "localTarget": {
+          "type": "object",
+          "required": ["kind", "modelId"],
+          "properties": {
+            "kind": { "const": "local" },
+            "modelId": { "type": "string", "minLength": 1 },
+            "options": {
+              "type": "object",
+              "properties": {
+                "temperature": { "type": "number", "minimum": 0 },
+                "maxTokens": { "type": "integer", "minimum": 1 },
+                "customSystemPrompt": { "type": "string" }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "cloudTarget": {
+          "type": "object",
+          "required": ["kind", "modelId", "providerId"],
+          "properties": {
+            "kind": { "const": "provider" },
+            "modelId": { "type": "string", "minLength": 1 },
+            "providerId": { "type": "string", "minLength": 1 },
+            "options": {
+              "type": "object",
+              "properties": {
+                "temperature": { "type": "number", "minimum": 0 },
+                "maxTokens": { "type": "integer", "minimum": 1 },
+                "customSystemPrompt": { "type": "string" }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "systemPrompt": { "type": "string", "minLength": 1 },
+        "retryPrompt": { "type": "string", "minLength": 1 },
+        "chunkPages": { "type": "integer", "minimum": 1, "maximum": 32 },
+        "contextOverlapPages": { "type": "integer", "minimum": 0, "maximum": 8 }
+      },
+      "additionalProperties": false
+    },
+    "archives": {
+      "type": "object",
+      "required": ["maxEntries", "maxEntryBytes", "maxTotalBytes"],
+      "properties": {
+        "maxEntries": { "type": "integer", "minimum": 1 },
+        "maxEntryBytes": { "type": "integer", "minimum": 1024 },
+        "maxTotalBytes": { "type": "integer", "minimum": 1024 }
+      },
+      "additionalProperties": false
+    },
+    "modelsLockPath": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": false
+}

@@ -204,6 +204,10 @@ export function containsJapaneseKana(text: string): boolean {
   return /[\u3040-\u30ff\uff66-\uff9f]/u.test(text);
 }
 
+export function containsReasoningArtifact(text: string): boolean {
+  return /<\/?think\b[^>]*>|<\|(?:analysis|reasoning)(?:_content)?\|>/iu.test(text);
+}
+
 export function looksLikeRefusal(text: string): boolean {
   return /(无法(?:协助|翻译|处理)|不能(?:协助|翻译|处理)|抱歉.{0,12}(?:不能|无法)|I\s+(?:can(?:not|'t)|am unable to)\s+(?:help|translate|assist))/iu.test(text);
 }
@@ -229,6 +233,7 @@ export function assessRegion(region: RegionRecord, quality: LocalizerConfig["qua
     return flags;
   }
   const translated = region.translatedText.trim();
+  if (containsReasoningArtifact(translated)) push("LLM_REASONING_LEAK", "error", true);
   if (looksLikeRefusal(translated)) push("TRANSLATION_REFUSAL", "error", true);
   if (region.policy === "replace" && containsJapaneseKana(translated)) push("JAPANESE_KANA_REMAINS", "error", true);
   const sourceSignals = significantCharacters(region.sourceText);
@@ -270,7 +275,7 @@ export function pagesNeedingRetry(regions: RegionRecord[]): string[] {
 }
 
 const TRANSLATION_RETRY_CODES = new Set([
-  "MISSING_TRANSLATION", "TRANSLATION_REFUSAL", "JAPANESE_KANA_REMAINS", "SIGNIFICANT_TOKEN_LOST",
+  "MISSING_TRANSLATION", "LLM_REASONING_LEAK", "TRANSLATION_REFUSAL", "JAPANESE_KANA_REMAINS", "SIGNIFICANT_TOKEN_LOST",
   "TRANSLATION_TOO_LONG", "TRANSLATION_TOO_SHORT", "TEXT_OVERFLOW_RISK", "SUSPICIOUS_DUPLICATE_TRANSLATION",
 ]);
 
@@ -280,6 +285,7 @@ export function translationRetryPages(regions: RegionRecord[]): string[] {
 
 const STRICT_RENDER_BLOCKER_CODES = new Set([
   "MISSING_TRANSLATION",
+  "LLM_REASONING_LEAK",
   "TRANSLATION_REFUSAL",
   "JAPANESE_KANA_REMAINS",
 ]);
@@ -298,6 +304,7 @@ const STRUCTURAL_RISK_CODES = new Set([
   "LOW_OCR_CONFIDENCE",
   "OCR_TEXT_ANOMALY",
   "MISSING_TRANSLATION",
+  "LLM_REASONING_LEAK",
   "TRANSLATION_REFUSAL",
   "JAPANESE_KANA_REMAINS",
   "SIGNIFICANT_TOKEN_LOST",

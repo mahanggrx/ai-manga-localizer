@@ -1,0 +1,82 @@
+diff --git a/core/services/translation.py b/core/services/translation.py
+--- a/core/services/translation.py
++++ b/core/services/translation.py
+@@ -1066,8 +1066,6 @@ def _parse_llm_response_unified(
+             f"Parsing {provider} unified response: {len(response_text)} chars",
+             verbose=debug,
+         )
+-        log_message(f"Raw response:\n---\n{response_text}\n---", always_print=True)
+-
+         # Pattern matches "1: text" or "1. text" or "1 text" etc.
+         pattern = re.compile(
+             r'^\s*(\d+)\s*[:.]\s*"?\s*(.*?)\s*"?\s*(?=\s*\n\s*\d+\s*[:.]|\s*$)',
+@@ -1139,28 +1137,24 @@ def _format_ocr_results(
+     extracted_texts: List[str],
+     bubble_metadata: List[Dict[str, Any]],
+ ) -> None:
+-    """Format and log OCR results.
++    """Log OCR result counts without exposing recognized content.
+ 
+     Args:
+-        extracted_texts: List of extracted text strings
+-        bubble_metadata: List of metadata dicts for text elements
+-        verbose: Whether to print verbose logging
++        extracted_texts: Recognized strings, used only to count completed regions
++        bubble_metadata: Metadata used to count bubble and outside-text regions
+     """
+-    log_lines = []
+-
+-    for i, text in enumerate(extracted_texts):
+-        metadata = bubble_metadata[i] if i < len(bubble_metadata) else {}
+-        is_osb = metadata.get("is_outside_text", False)
+-        prefix = f"{i + 1}"
+-        type_label = "[OSB]" if is_osb else "[Bubble]"
+-
+-        log_lines.append(f"{prefix}: {type_label} {text}")
+-
+-    if log_lines:
+-        log_message(
+-            f"Raw OCR output:\n---\n{chr(10).join(log_lines)}\n---",
+-            always_print=True,
+-        )
++    outside_count = sum(
++        1
++        for index in range(len(extracted_texts))
++        if index < len(bubble_metadata)
++        and bubble_metadata[index].get("is_outside_text", False)
++    )
++    bubble_count = len(extracted_texts) - outside_count
++    log_message(
++        f"OCR completed: {len(extracted_texts)} region(s) "
++        f"({bubble_count} bubble, {outside_count} outside-text)",
++        always_print=True,
++    )
+ 
+ 
+ def _check_ocr_failure(texts: List[str], provider: Optional[str] = None) -> bool:
+@@ -1298,8 +1292,6 @@ def _parse_rosetta_response(
+     if response_text == "":
+         raise TranslationError(f"{provider}: Empty response")
+ 
+-    log_message(f"Raw response:\n---\n{response_text}\n---", always_print=True)
+-
+     # Strip markdown code fences if present
+     cleaned = response_text.strip()
+     if cleaned.startswith("```"):
+diff --git a/core/validation.py b/core/validation.py
+--- a/core/validation.py
++++ b/core/validation.py
+@@ -176,7 +176,12 @@ def clamp_settings(settings: Any) -> Any:
+     for key, paths in _CONFIG_ATTR_PATHS.items():
+         if not hasattr(settings, "__dict__"):
+             break
+-        min_val, max_val = SETTING_CONSTRAINTS[key]
++        limits = SETTING_CONSTRAINTS.get(key)
++        if limits is None:
++            # Boolean and other non-numeric settings may share the attribute map,
++            # but they have no numeric bounds to clamp.
++            continue
++        min_val, max_val = limits
+         for path in paths:
+             target = settings
+             for attr in path[:-1]:

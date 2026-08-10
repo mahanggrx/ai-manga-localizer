@@ -22,6 +22,16 @@
 
 复制 `localizer.config.example.json` 为不提交 Git 的 `localizer.config.json`，按实际 Koharu 引擎和模型调整配置。云端回退默认没有配置。
 
+主翻译目标既可以是 Koharu 内置的 `kind: "local"` 模型，也可以是 `providerId: "openai-compatible"` 的本机 llama.cpp/LM Studio 服务。后一种配置在任何页面上传前都会核对 Koharu 中保存的 provider 地址；只有 `localhost`、`127.0.0.1` 或 `::1` 会被视为本地目标，其他地址失败关闭。真正的云端 provider 只能配置为 `cloudTarget`，并且仍需命令行显式传入 `--allow-cloud`。
+
+带 `<think>` 前缀的本地翻译模型不能直接接入 Koharu，否则思考文本可能成为气泡内容。`src/local-openai-proxy.ts` 提供一个只监听回环地址的适配器：它只转发模型发现和非流式 Chat Completions，在内存中移除完整的前置思考块，规范化完整顺序编号列表开头的全角冒号，并把漫画翻译请求固定为 0.3 温度和最多 2048 个输出 token；标签缺失、位置异常、流式请求、超限响应或非本机上游都会失败关闭，且不记录请求或响应正文。JSON 响应显式声明 UTF-8。客户端取消时，适配器会同时中断上游推理。启动示例：`node src/local-openai-proxy.ts --upstream http://127.0.0.1:8080 --port 8081`，随后把 Koharu 的 OpenAI Compatible 地址设为 `http://127.0.0.1:8081/v1`。
+
+`doctor` 会报告可用物理内存与 Windows 提交额度；`translate` 在检测/OCR 和加载本地翻译模型前还会重新检查，默认至少保留 4096 MiB 可用物理内存和 8192 MiB 提交余量，测量失败或余量不足时不会启动重型阶段。8GB 显存上运行 GGUF 时应保持模型单实例，并优先使用 llama.cpp 的 `--no-mmap`；推理模型的 reasoning parser 应按其模型卡选择，不能假定所有模型都兼容 DeepSeek 格式。
+
+模型专用提示词属于模型配置的一部分。例如 Murasaki 的官方模型卡要求漫画对话使用 Script Mode；通用翻译提示只能用于连通性 smoke，不能据此冻结默认模型。模型仍须通过仓库金标门槛后才能写入锁文件。
+
+实验性 MangaTranslator v1.22.0 checkout 在运行前必须应用 `patches/manga-translator-v1.22.0-local-safety.patch`。补丁修复布尔配置被当作数值钳制的问题，并把控制台中的 OCR/模型正文改为只记录区域计数；运行方还必须显式提供包含中文字体文件的 `--font-dir`，否则清字可能成功而排字为空。
+
 本机开发布局：Koharu 0.61.2 便携版位于 `.local/koharu/koharu-0.61.2.exe`，外部 GGUF 模型缓存使用 `.local/models/`，合法私有 smoke 样本放入 `private-smoke/`。这三个路径都由 `.gitignore` 排除；Koharu 自己按官方设计写入的运行库和内置模型仍位于其用户级应用数据目录。
 
 `translation.chunkPages` 控制每个章节翻译块的页数，`translation.contextOverlapPages` 控制相邻块重复携带的上下文页数，后者必须小于前者。默认值为 4 页与 1 页。

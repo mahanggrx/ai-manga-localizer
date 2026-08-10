@@ -8,6 +8,7 @@ import { KoharuClient, flattenEngineIds, selectEngine } from "./koharu-client.ts
 import { asLocalizerError, LocalizerError } from "./errors.ts";
 import type { SafeLogger } from "./logger.ts";
 import { assertSchema } from "./schema.ts";
+import { assessResourceHeadroom, readSystemMemorySnapshot, type SystemMemorySnapshot } from "./system-resources.ts";
 import type { LocalizerConfig, ModelLock } from "./types.ts";
 
 const execFileAsync = promisify(execFile);
@@ -23,6 +24,7 @@ export interface DoctorResult {
   ok: boolean;
   checks: DoctorCheck[];
   gpu?: { name: string; memoryMiB: number; driver: string };
+  systemMemory?: SystemMemorySnapshot;
   koharu?: { version: string; device?: string; engineCount: number };
 }
 
@@ -87,6 +89,18 @@ async function inspectModelLock(config: LocalizerConfig, checks: DoctorCheck[]):
 export async function runDoctor(config: LocalizerConfig, options?: { logger?: SafeLogger; fetchImpl?: typeof fetch }): Promise<DoctorResult> {
   const checks: DoctorCheck[] = [];
   const result: DoctorResult = { ok: false, checks };
+  try {
+    result.systemMemory = await readSystemMemorySnapshot();
+    const assessment = assessResourceHeadroom(result.systemMemory);
+    checks.push({
+      name: "system-memory",
+      status: assessment.ok ? assessment.code === "COMMIT_COUNTER_UNAVAILABLE" ? "warn" : "pass" : "fail",
+      code: assessment.code,
+      detail: assessment.detail,
+    });
+  } catch (error) {
+    checks.push({ name: "system-memory", status: "warn", code: "MEMORY_CHECK_UNAVAILABLE", detail: asLocalizerError(error).message });
+  }
   try {
     result.gpu = await gpuInfo();
     const expectedGpu = /RTX\s*4060/i.test(result.gpu.name);

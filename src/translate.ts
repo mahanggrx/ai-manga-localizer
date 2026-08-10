@@ -4,9 +4,11 @@ import { createCbzBuffer, detectMediaType, loadInputImages, readZipImagesBuffer 
 import { asLocalizerError, LocalizerError } from "./errors.ts";
 import { createUniqueDirectory, safeSlug, writeExclusive, writeJsonExclusive } from "./file-utils.ts";
 import { KoharuClient, selectEngine, selectedPipelineEngine } from "./koharu-client.ts";
+import { assertLocalTranslationTarget } from "./local-translation.ts";
 import { logger, type SafeLogger } from "./logger.ts";
 import { applyChapterQa, buildGlossaryPrompt, buildRetryPrompt, chunkPageIds, deriveGlossary, extractPageIds, extractRegionsFromScene, lowOcrPages, markRenderBlockedPages, qaSummary, renderProtectionPlan, translationRetryPages } from "./quality.ts";
 import { assertSchema } from "./schema.ts";
+import { assessResourceHeadroom, readSystemMemorySnapshot, type SystemMemorySnapshot } from "./system-resources.ts";
 import type { ChapterManifest, InputImage, JsonObject, JsonValue, LocalizerConfig, RegionRecord, RunReport, StageReport } from "./types.ts";
 
 export interface TranslateOptions {
@@ -16,6 +18,7 @@ export interface TranslateOptions {
   psd: boolean;
   logger?: SafeLogger;
   fetchImpl?: typeof fetch;
+  readSystemMemory?: () => Promise<SystemMemorySnapshot>;
 }
 
 interface PipelineEngines {
@@ -186,6 +189,18 @@ async function executeStage<T>(report: RunReport, checkpoints: string, name: str
   }
 }
 
+async function assertHeavyProcessHeadroom(options: TranslateOptions, item: StageReport): Promise<void> {
+  let snapshot: SystemMemorySnapshot;
+  try {
+    snapshot = await (options.readSystemMemory ?? readSystemMemorySnapshot)();
+  } catch (error) {
+    throw new LocalizerError("RESOURCE_CHECK_UNAVAILABLE", "System memory could not be measured before starting a heavy local process", { cause: error });
+  }
+  const assessment = assessResourceHeadroom(snapshot);
+  if (!assessment.ok) throw new LocalizerError(assessment.code, assessment.detail);
+  if (assessment.code === "COMMIT_COUNTER_UNAVAILABLE") item.warnings.push(assessment.code);
+}
+
 export async function runTranslate(config: LocalizerConfig, options: TranslateOptions): Promise<{ directory: string; report: RunReport }> {
   assertImageUploadIsLocal(config.koharu.baseUrl);
   const safeLogger = options.logger ?? logger;
@@ -223,6 +238,7 @@ export async function runTranslate(config: LocalizerConfig, options: TranslateOp
     });
     safeLogger.info("KOHARU_CONNECTED", { runId: report.runId, version: meta.version, device: typeof meta.device === "string" ? meta.device : undefined });
     const runtimeConfig = await client.getConfig();
+    assertLocalTranslationTarget(config.translation.localTarget, runtimeConfig);
     const pipeline = resolveEngines(engines, runtimeConfig, config);
 
     await executeStage(report, checkpoints, "create-project-and-upload", async () => {
@@ -232,6 +248,7 @@ export async function runTranslate(config: LocalizerConfig, options: TranslateOp
     });
 
     await executeStage(report, checkpoints, "detect-and-primary-ocr", async (item) => {
+      await assertHeavyProcessHeadroom(options, item);
       const run = await client.runPipeline({ steps: pipeline.detect });
       item.warnings.push(...run.warnings.map(() => "KOHARU_PIPELINE_WARNING"));
     });
@@ -255,7 +272,8 @@ export async function runTranslate(config: LocalizerConfig, options: TranslateOp
       regions = mergeOcrPass(before, fallback, pipeline.fallbackOcr);
     }
 
-    await executeStage(report, checkpoints, "load-local-translator", async () => {
+    await executeStage(report, checkpoints, "load-local-translator", async (item) => {
+      await assertHeavyProcessHeadroom(options, item);
       await client.loadLlm(config.translation.localTarget);
       llmLoaded = true;
       await client.waitForLlmReady();

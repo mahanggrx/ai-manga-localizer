@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DEFAULT_CONFIG } from "../src/config.ts";
-import { applyChapterQa, assessRegion, buildRetryPrompt, chunkPageIds, classifyRole, containsJapaneseKana, deriveGlossary, extractPageIds, extractRegionsFromScene, looksLikeRefusal, markRenderBlockedPages, renderBlockedPages, renderProtectionPlan, translationRetryPages } from "../src/quality.ts";
+import { applyChapterQa, assessRegion, buildRetryPrompt, chunkPageIds, classifyRole, containsJapaneseKana, containsReasoningArtifact, deriveGlossary, extractPageIds, extractRegionsFromScene, looksLikeRefusal, markRenderBlockedPages, renderBlockedPages, renderProtectionPlan, translationRetryPages } from "../src/quality.ts";
 import type { JsonObject, RegionRecord } from "../src/types.ts";
 
 test("scene extractor supports direct node and semantic component shapes", () => {
@@ -121,6 +121,19 @@ test("pure OCR warnings do not trigger a cloud translation retry", () => {
   const assessed = applyChapterQa([region], DEFAULT_CONFIG.quality);
   assert.ok(assessed[0].qaFlags.some((flag) => flag.code === "LOW_OCR_CONFIDENCE"));
   assert.deepEqual(translationRetryPages(assessed), []);
+});
+
+test("reasoning artifacts trigger retry and block rendering", () => {
+  const region: RegionRecord = {
+    schemaVersion: 1, id: "r1", pageId: "p1", order: 0, role: "dialogue", policy: "replace",
+    sourceText: "原文", translatedText: "<think>internal reasoning</think>译文",
+    ocrCandidates: [], translationCandidates: [], qaFlags: [],
+  };
+  const assessed = applyChapterQa([region], DEFAULT_CONFIG.quality);
+  assert.equal(containsReasoningArtifact(region.translatedText!), true);
+  assert.ok(assessed[0].qaFlags.some((flag) => flag.code === "LLM_REASONING_LEAK"));
+  assert.deepEqual(translationRetryPages(assessed), ["p1"]);
+  assert.deepEqual(renderBlockedPages(assessed), ["p1"]);
 });
 
 test("render safety preserves only strict blockers and compound overflow failures", () => {

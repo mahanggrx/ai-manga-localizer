@@ -17,13 +17,24 @@ test("schema validator rejects unknown top-level config fields", async () => {
   assert.ok(errors.some((error) => error.includes("unexpected property")));
 });
 
-test("config schema requires a local primary target and complete candidate provenance", async () => {
+test("config accepts only built-in or loopback-compatible primary target identities", async () => {
   const configSchema = await loadSchema("localizer-config.schema.json");
-  const remotePrimary = {
+  const localProvider = {
+    ...DEFAULT_CONFIG,
+    translation: { ...DEFAULT_CONFIG.translation, localTarget: { kind: "provider", modelId: "local-model", providerId: "openai-compatible" } },
+  };
+  assert.deepEqual(validateSchema(localProvider, configSchema), []);
+
+  const directory = await mkdtemp(path.join(os.tmpdir(), "manga-localizer-provider-"));
+  const configPath = path.join(directory, "remote.json");
+  await writeFile(configPath, JSON.stringify({
     ...DEFAULT_CONFIG,
     translation: { ...DEFAULT_CONFIG.translation, localTarget: { kind: "provider", modelId: "remote", providerId: "cloud" } },
-  };
-  assert.ok(validateSchema(remotePrimary, configSchema).some((error) => error.includes("must equal")));
+  }));
+  await assert.rejects(
+    () => loadConfig(configPath),
+    (error: unknown) => (error as { code?: string }).code === "CONFIG_LOCAL_TRANSLATOR_PROVIDER_UNSUPPORTED",
+  );
 
   const regionSchema = await loadSchema("region-record.schema.json");
   const invalidRegion = {

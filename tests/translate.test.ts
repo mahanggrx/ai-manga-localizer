@@ -10,6 +10,7 @@ import type { SafeLogger } from "../src/logger.ts";
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4, 5, 6, 7, 8]);
 const silentLogger: SafeLogger = { info() {}, warn() {}, error() {} };
+const healthyMemory = async () => ({ totalPhysicalMiB: 16_000, availablePhysicalMiB: 6_000, committedMiB: 20_000, commitLimitMiB: 40_000, commitHeadroomMiB: 20_000 });
 
 test("rendered page assembly preserves blocked pages in original order", () => {
   const source = (fileName: string, marker: number): InputImage => ({
@@ -80,7 +81,7 @@ test("translate orchestrates the documented Koharu API and emits immutable artif
     return json({ error: "not found" }, 404);
   };
   const config = { ...DEFAULT_CONFIG, koharu: { ...DEFAULT_CONFIG.koharu, requestTimeoutMs: 2000, operationTimeoutMs: 5000 } };
-  const result = await runTranslate(config, { inputPath: input, outputParent: output, allowCloud: false, psd: false, fetchImpl, logger: silentLogger });
+  const result = await runTranslate(config, { inputPath: input, outputParent: output, allowCloud: false, psd: false, fetchImpl, logger: silentLogger, readSystemMemory: healthyMemory });
   assert.equal(result.report.status, "completed-with-warnings");
   for (const file of ["translated.cbz", "chapter.khr", "chapter-manifest.json", "report.json", "rendered/0001.png"]) {
     await assert.doesNotReject(() => access(path.join(result.directory, file)));
@@ -90,7 +91,7 @@ test("translate orchestrates the documented Koharu API and emits immutable artif
   translated = false;
   failTranslation = true;
   await assert.rejects(
-    () => runTranslate(config, { inputPath: input, outputParent: output, allowCloud: false, psd: false, fetchImpl, logger: silentLogger }),
+    () => runTranslate(config, { inputPath: input, outputParent: output, allowCloud: false, psd: false, fetchImpl, logger: silentLogger, readSystemMemory: healthyMemory }),
     (error: unknown) => (error as { code?: string }).code === "KOHARU_EPOCH_CONFLICT" && !String((error as Error).message).includes("private OCR text"),
   );
   const runs = await readdir(output, { withFileTypes: true });
@@ -105,6 +106,21 @@ test("translate orchestrates the documented Koharu API and emits immutable artif
   const recoveryReport = JSON.parse(await readFile(path.join(recoveredRun!, "report.json"), "utf8"));
   assert.equal(recoveryReport.status, "failed");
   assert.equal(recoveryReport.failure.code, "KOHARU_EPOCH_CONFLICT");
+
+  const operationsBeforeLowMemory = operationIndex;
+  await assert.rejects(
+    () => runTranslate(config, {
+      inputPath: input,
+      outputParent: output,
+      allowCloud: false,
+      psd: false,
+      fetchImpl,
+      logger: silentLogger,
+      readSystemMemory: async () => ({ totalPhysicalMiB: 16_000, availablePhysicalMiB: 2_000, commitHeadroomMiB: 20_000 }),
+    }),
+    (error: unknown) => (error as { code?: string }).code === "PHYSICAL_MEMORY_LOW",
+  );
+  assert.equal(operationIndex, operationsBeforeLowMemory);
 });
 
 test("translate refuses a remote Koharu even when remote diagnostics are configured", async () => {

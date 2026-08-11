@@ -237,6 +237,22 @@ function invalid(message: string): never {
   throw new LocalizerError("OCR_ARBITRATION_CONTRACT_INVALID", message);
 }
 
+export function assertOcrPredictionCompleteness(predictions: readonly unknown[], expectedCount: number): void {
+  if (!Array.isArray(predictions) || !Number.isInteger(expectedCount) || expectedCount < 0 || predictions.length !== expectedCount) {
+    invalid("strategy prediction count does not match the fixed denominator");
+  }
+  for (let index = 0; index < expectedCount; index += 1) {
+    if (!(index in predictions) || predictions[index] === undefined) invalid("leave-one-page-out evaluation did not produce complete predictions");
+  }
+}
+
+function completePredictions(slots: Array<Prediction | undefined>, expectedCount: number): Prediction[] {
+  assertOcrPredictionCompleteness(slots, expectedCount);
+  const complete: Prediction[] = [];
+  for (let index = 0; index < expectedCount; index += 1) complete.push(slots[index]!);
+  return complete;
+}
+
 function record(value: unknown, label: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) invalid(`${label} must be an object`);
   return value as Record<string, unknown>;
@@ -786,7 +802,10 @@ export function evaluateOcrArbitration(
 
   const allPageIds = [...new Set(joined.map(({ benchmark: region }) => region.pageId))].sort();
   const pageIds = [...new Set(units.map((unit) => unit.pageId))].sort();
-  const predictionsByPolicy = new Map<OcrArbitrationPolicy, Prediction[]>(POLICIES.map((policy) => [policy, Array<Prediction>(units.length)]));
+  const predictionSlotsByPolicy = new Map<OcrArbitrationPolicy, Array<Prediction | undefined>>(POLICIES.map((policy) => [
+    policy,
+    Array.from({ length: units.length }, () => undefined),
+  ]));
   const testSizes: number[] = [];
   for (const heldPageId of allPageIds) {
     const training = units.filter((unit) => unit.pageId !== heldPageId);
@@ -795,13 +814,17 @@ export function evaluateOcrArbitration(
     const testIndexes = units.map((unit, index) => ({ unit, index })).filter(({ unit }) => unit.pageId === heldPageId);
     testSizes.push(testIndexes.length);
     for (const { unit, index } of testIndexes) {
-      predictionsByPolicy.get("always-paddle")![index] = fixedPrediction(unit, "always-paddle");
-      predictionsByPolicy.get("always-manga")![index] = fixedPrediction(unit, "always-manga");
-      predictionsByPolicy.get("agreement-category")![index] = selectAdaptive(unit, "agreement-category", model, spec.engines.paddle, spec.engines.manga);
-      predictionsByPolicy.get("agreement-category-bubble")![index] = selectAdaptive(unit, "agreement-category-bubble", model, spec.engines.paddle, spec.engines.manga);
+      predictionSlotsByPolicy.get("always-paddle")![index] = fixedPrediction(unit, "always-paddle");
+      predictionSlotsByPolicy.get("always-manga")![index] = fixedPrediction(unit, "always-manga");
+      predictionSlotsByPolicy.get("agreement-category")![index] = selectAdaptive(unit, "agreement-category", model, spec.engines.paddle, spec.engines.manga);
+      predictionSlotsByPolicy.get("agreement-category-bubble")![index] = selectAdaptive(unit, "agreement-category-bubble", model, spec.engines.paddle, spec.engines.manga);
     }
   }
-  for (const policy of POLICIES) if (predictionsByPolicy.get(policy)!.some((prediction) => prediction === undefined)) invalid("leave-one-page-out evaluation did not produce complete predictions");
+  const fixedDenominator = baseline.denominators.ocrEligibleDetectedRegions;
+  const predictionsByPolicy = new Map<OcrArbitrationPolicy, Prediction[]>(POLICIES.map((policy) => [
+    policy,
+    completePredictions(predictionSlotsByPolicy.get(policy)!, fixedDenominator),
+  ]));
 
   const overallByPolicy = new Map<OcrArbitrationPolicy, OcrArbitrationMetrics>(POLICIES.map((policy) => [policy, evaluatePredictions(units, predictionsByPolicy.get(policy)!)]));
   verifyFixedBaselines(overallByPolicy, baseline, spec.engines.paddle, spec.engines.manga);
@@ -824,6 +847,10 @@ export function evaluateOcrArbitration(
     const adaptive = policy === "agreement-category" || policy === "agreement-category-bubble";
     const structuralNegativeSafetyPassed = exactNotWorseThanPaddle && corpusCerNotWorseThanPaddle;
     const selectionCounts = [...new Set(predictions.map(({ reason }) => reason))].sort().map((reason) => ({ reason, count: predictions.filter((prediction) => prediction.reason === reason).length }));
+    const selectionCountTotal = selectionCounts.reduce((sum, item) => sum + item.count, 0);
+    if (predictions.length !== fixedDenominator || overallByPolicy.get(policy)!.regionCount !== fixedDenominator || selectionCountTotal !== fixedDenominator) {
+      invalid("strategy prediction accounting does not match the fixed denominator");
+    }
     return {
       policy,
       overall: overallByPolicy.get(policy)!,

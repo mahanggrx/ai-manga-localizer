@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  assertOcrPredictionCompleteness,
   evaluateOcrArbitration,
   inspectOcrCandidate,
   type OcrArbitrationEvaluationSpec,
 } from "../src/ocr-arbitration.ts";
+import { LocalizerError } from "../src/errors.ts";
 import { evaluateOcrBaseline, type OcrBenchmarkInput } from "../src/ocr-benchmark.ts";
 import { sha256Bytes } from "../src/file-utils.ts";
 import type { RoutingRegressionInput } from "../src/routing-regression.ts";
@@ -126,6 +128,24 @@ test("hard OCR candidate checks fail closed on unsafe Unicode structure", () => 
   assert.equal(inspectOcrCandidate({ engine: PADDLE, text: "A\nB" }).safe, true);
 });
 
+test("prediction completeness rejects sparse slots with the stable contract error", () => {
+  const sparse = Array<unknown>(2);
+  sparse[0] = { text: "A", reason: "fixed-paddle" };
+  assert.throws(
+    () => assertOcrPredictionCompleteness(sparse, 2),
+    (error: unknown) => error instanceof LocalizerError
+      && error.code === "OCR_ARBITRATION_CONTRACT_INVALID"
+      && /complete predictions/.test(error.message),
+  );
+
+  assert.throws(
+    () => assertOcrPredictionCompleteness([{ text: "A", reason: "fixed-paddle" }], 2),
+    (error: unknown) => error instanceof LocalizerError
+      && error.code === "OCR_ARBITRATION_CONTRACT_INVALID"
+      && /fixed denominator/.test(error.message),
+  );
+});
+
 test("source pins and complete region association fail closed", () => {
   const fixture = leakageFixture();
   const staleSpec = structuredClone(fixture.spec);
@@ -221,6 +241,10 @@ test("bootstrap is deterministic and versioned spec and report satisfy schemas",
   const fixture = leakageFixture();
   const first = evaluateOcrArbitration(fixture.benchmarkBytes, fixture.baselineBytes, fixture.routingBytes, fixture.spec);
   const second = evaluateOcrArbitration(fixture.benchmarkBytes, fixture.baselineBytes, fixture.routingBytes, fixture.spec);
+  for (const strategy of first.strategies) {
+    assert.equal(strategy.overall.regionCount, 3);
+    assert.equal(strategy.selectionCounts.reduce((sum, item) => sum + item.count, 0), 3);
+  }
   assert.deepEqual(first.strategies.map(({ bootstrapComparisons }) => bootstrapComparisons), second.strategies.map(({ bootstrapComparisons }) => bootstrapComparisons));
   await assert.doesNotReject(() => assertSchema("ocr-arbitration-spec.schema.json", fixture.spec));
   await assert.doesNotReject(() => assertSchema("ocr-arbitration-report.schema.json", first));

@@ -44,11 +44,12 @@ test("config accepts only built-in or loopback-compatible primary target identit
   assert.ok(validateSchema(invalidRegion, regionSchema).some((error) => error.includes("selectionReason")));
   const validRoleEvidence = {
     schemaVersion: 1, id: "r2", pageId: "p1", order: 1, role: "dialogue", policy: "replace", sourceText: "text",
-    insideBubble: true, bubbleInstanceId: "p1:7", roleConfidence: 0.95, roleProvenance: "bubble-mask",
+    insideBubble: true, bubbleInstanceId: "p1:7", geometrySource: "line-polygons", roleConfidence: 0.95, roleProvenance: "bubble-mask",
     ocrCandidates: [{ engine: "ocr", text: "text", selected: true, selectionReason: "primary-engine-output" }], translationCandidates: [], qaFlags: [],
   };
   assert.deepEqual(validateSchema(validRoleEvidence, regionSchema), []);
   assert.ok(validateSchema({ ...validRoleEvidence, roleConfidence: 2 }, regionSchema).some((error) => error.includes("above maximum")));
+  assert.ok(validateSchema({ ...validRoleEvidence, geometrySource: "transform" }, regionSchema).some((error) => error.includes("not in enum")));
 });
 
 test("config rejects overlapping sparse and dense structural thresholds", async () => {

@@ -55,6 +55,8 @@ test("bubble mask maps inside, outside, partial, shared-label, polygon, and page
     outside: textNode("outside", 6, 0, 2, 2),
     partial: textNode("partial", 2, 0, 4, 2),
     polygon: textNode("polygon", 6, 2, 2, 2, { translation: "target-polygon", linePolygons: [[[0, 2], [2, 2], [2, 4], [0, 4]]] }),
+    nullPolygon: textNode("nullPolygon", 0, 0, 2, 2, { translation: "target-null", linePolygons: null }),
+    emptyPolygon: textNode("emptyPolygon", 0, 0, 2, 2, { translation: "target-empty", linePolygons: [] }),
   });
   const evidence = await buildBubbleMaskEvidence(scene, async () => bytes);
   const regions = extractRegionsFromScene(scene, {
@@ -71,6 +73,7 @@ test("bubble mask maps inside, outside, partial, shared-label, polygon, and page
   assert.equal(byId.get("inside1")?.roleProvenance, "bubble-mask");
   assert.equal(byId.get("inside1")?.roleConfidence, 1);
   assert.equal(byId.get("inside1")?.bubbleInstanceId, "page1:7");
+  assert.equal(byId.get("inside1")?.geometrySource, "bbox");
   assert.equal(byId.get("inside2")?.bubbleInstanceId, byId.get("inside1")?.bubbleInstanceId);
 
   assert.equal(byId.get("outside")?.insideBubble, false);
@@ -80,9 +83,24 @@ test("bubble mask maps inside, outside, partial, shared-label, polygon, and page
   assert.equal(byId.get("partial")?.role, "unknown");
   assert.equal(byId.get("partial")?.bubbleInstanceId, "page1:7");
   assert.equal(byId.get("polygon")?.role, "dialogue");
+  assert.equal(byId.get("polygon")?.geometrySource, "line-polygons");
+  assert.equal(byId.get("nullPolygon")?.geometrySource, "bbox");
+  assert.equal(byId.get("emptyPolygon")?.geometrySource, "bbox");
   assert.deepEqual(renderProtectionPlan(["page1"], regions, DEFAULT_CONFIG.quality.structuralProtection), [
     { pageId: "page1", codes: ["UNCLASSIFIED_TEXT_REGION"] },
   ]);
+});
+
+test("missing or malformed text geometry fails closed without geometry provenance", async () => {
+  const bytes = await webpMask(4, 4, new Uint8Array(16).fill(3));
+  const scene = sceneWithNodes(4, 4, {
+    missingGeometry: { id: "missingGeometry", kind: { text: { text: "source-missing" } } },
+    malformedPolygons: textNode("malformedPolygons", 0, 0, 2, 2, { linePolygons: [[0, 0], [1, 1]] }),
+  });
+  const evidence = await buildBubbleMaskEvidence(scene, async () => bytes);
+  const regions = extractRegionsFromScene(scene, { ocrEngine: "ocr", translationModel: "llm", quality: DEFAULT_CONFIG.quality, bubbleEvidence: evidence });
+  assert.equal(evidence.size, 0);
+  assert.ok(regions.every((region) => region.role === "unknown" && region.policy === "preserve-with-annotation" && region.geometrySource === undefined));
 });
 
 test("missing bubble masks preserve unknown regions and block page rendering", async () => {

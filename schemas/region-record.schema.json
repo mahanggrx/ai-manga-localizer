@@ -24,6 +24,7 @@
     },
     "insideBubble": { "type": "boolean" },
     "bubbleInstanceId": { "type": "string", "minLength": 1 },
+    "geometrySource": { "type": "string", "enum": ["line-polygons", "bbox"] },
     "roleConfidence": { "type": "number", "minimum": 0, "maximum": 1 },
     "roleProvenance": { "type": "string", "enum": ["native", "bubble-mask", "insufficient-evidence"] },
     "ocrConfidence": { "type": "number", "minimum": 0, "maximum": 1 },

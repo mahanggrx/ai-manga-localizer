@@ -1,9 +1,10 @@
 import { lstat, readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
+import { deriveBubbleOverlapDecision } from "./bubble-mask.ts";
 import { LocalizerError } from "./errors.ts";
 import { classifyRole, replacementPolicyForRole } from "./quality.ts";
 import { assertSchema } from "./schema.ts";
-import type { RegionRecord } from "./types.ts";
+import type { BubbleGeometrySource, RegionRecord } from "./types.ts";
 
 export type RoutingClass = "ordinary-dialogue" | "bubble-external" | "unknown";
 
@@ -18,7 +19,8 @@ export interface RoutingRegressionObservation {
   evidence?: {
     insideBubble?: boolean;
     confidence: number;
-    provenance: "native" | "bubble-mask";
+    roleProvenance: "native" | "bubble-mask";
+    geometrySource?: BubbleGeometrySource;
   };
   overlapRate?: number;
   dominantShare?: number;
@@ -27,7 +29,7 @@ export interface RoutingRegressionObservation {
 }
 
 export interface RoutingRegressionInput {
-  schemaVersion: 1;
+  schemaVersion: 2;
   benchmarkId: string;
   observations: RoutingRegressionObservation[];
 }
@@ -45,12 +47,13 @@ export interface RoutingHardCase {
   category: string;
   detected: boolean;
   tags: string[];
+  geometrySource?: BubbleGeometrySource;
   overlapRate?: number;
   dominantShare?: number;
 }
 
 export interface RoutingRegressionReport {
-  schemaVersion: 1;
+  schemaVersion: 2;
   benchmarkId: string;
   regionCount: number;
   detectedRegionCount: number;
@@ -61,6 +64,12 @@ export interface RoutingRegressionReport {
   policies: Record<RegionRecord["policy"], number>;
   bubbleMapping: { mapped: number; total: number; rate: number };
   deterministicEvidence: { classified: number; total: number; rate: number };
+  geometrySourceCounts: Record<BubbleGeometrySource, number>;
+  polygonGate: {
+    status: "passed" | "failed";
+    freezeEligible: boolean;
+    reasonCode?: "LINE_POLYGONS_UNAVAILABLE" | "BBOX_FALLBACK_PRESENT" | "GEOMETRY_EVIDENCE_INCOMPLETE";
+  };
   pageSafety: {
     reviewedPages: number;
     pagesWithDetectedUnknown: number;
@@ -118,13 +127,25 @@ function validateObservation(item: RoutingRegressionObservation): void {
   if (item.legacyPolicy !== undefined && !POLICY_VALUES.has(item.legacyPolicy)) invalid("Routing observation legacy policy is invalid");
   if (item.evidence !== undefined) {
     if (!item.evidence || typeof item.evidence !== "object" || Array.isArray(item.evidence)) invalid("Routing observation evidence is invalid");
-    if (Object.keys(item.evidence).some((key) => !["insideBubble", "confidence", "provenance"].includes(key))) invalid("Routing observation evidence contains an unsupported field");
+    if (Object.keys(item.evidence).some((key) => !["insideBubble", "confidence", "roleProvenance", "geometrySource"].includes(key))) invalid("Routing observation evidence contains an unsupported field");
     if (item.evidence.insideBubble !== undefined && typeof item.evidence.insideBubble !== "boolean") invalid("Routing observation bubble state is invalid");
     if (!Number.isFinite(item.evidence.confidence) || item.evidence.confidence < 0 || item.evidence.confidence > 1) invalid("Routing observation confidence is invalid");
-    if (item.evidence.provenance !== "native" && item.evidence.provenance !== "bubble-mask") invalid("Routing observation provenance is invalid");
+    if (item.evidence.roleProvenance !== "native" && item.evidence.roleProvenance !== "bubble-mask") invalid("Routing observation role provenance is invalid");
+    if (item.evidence.geometrySource !== undefined && item.evidence.geometrySource !== "line-polygons" && item.evidence.geometrySource !== "bbox") invalid("Routing observation geometry source is invalid");
   }
   for (const value of [item.overlapRate, item.dominantShare]) {
     if (value !== undefined && (!Number.isFinite(value) || value < 0 || value > 1)) invalid("Routing observation overlap evidence is invalid");
+  }
+  if (item.evidence?.roleProvenance === "bubble-mask") {
+    if (!item.evidence.geometrySource || item.overlapRate === undefined || item.dominantShare === undefined) {
+      invalid("Bubble-mask routing evidence requires geometry source, overlap rate, and dominant-label share");
+    }
+    if ((item.overlapRate === 0) !== (item.dominantShare === 0)) invalid("Routing observation dominant-label share contradicts overlap rate");
+    const derived = deriveBubbleOverlapDecision(item.overlapRate, item.dominantShare);
+    if (item.evidence.insideBubble !== derived.insideBubble) invalid("Routing observation bubble state contradicts overlap evidence");
+    if (Math.abs(item.evidence.confidence - derived.confidence) > 1e-9) invalid("Routing observation confidence contradicts overlap evidence");
+  } else if (item.evidence?.geometrySource !== undefined || item.overlapRate !== undefined || item.dominantShare !== undefined) {
+    invalid("Geometry overlap evidence requires bubble-mask role provenance");
   }
   if (item.hardCaseTags !== undefined) {
     if (!Array.isArray(item.hardCaseTags) || item.hardCaseTags.length > 32 || item.hardCaseTags.some((tag) => typeof tag !== "string" || !SAFE_TAG.test(tag))) invalid("Routing hard-case tag is invalid");
@@ -134,7 +155,11 @@ function validateObservation(item: RoutingRegressionObservation): void {
 }
 
 function routingClassFor(item: RoutingRegressionObservation): { routingClass: RoutingClass; role: RegionRecord["role"]; policy: RegionRecord["policy"] } {
-  const decision = classifyRole(item.nativeRole, item.evidence);
+  const decision = classifyRole(item.nativeRole, item.evidence && {
+    insideBubble: item.evidence.insideBubble,
+    confidence: item.evidence.confidence,
+    roleProvenance: item.evidence.roleProvenance,
+  });
   const policy = replacementPolicyForRole(decision.role);
   if (decision.role === "dialogue" || decision.role === "caption") return { routingClass: "ordinary-dialogue", role: decision.role, policy };
   if (item.evidence?.insideBubble === false) return { routingClass: "bubble-external", role: decision.role, policy };
@@ -179,6 +204,7 @@ export function selectMinimalRoleHardCases(observations: RoutingRegressionObserv
       category: item.category,
       detected: item.detected,
       tags: [...(item.hardCaseTags ?? [])].sort(),
+      ...(item.evidence?.geometrySource ? { geometrySource: item.evidence.geometrySource } : {}),
       ...(item.overlapRate !== undefined ? { overlapRate: item.overlapRate } : {}),
       ...(item.dominantShare !== undefined ? { dominantShare: item.dominantShare } : {}),
     }));
@@ -186,8 +212,8 @@ export function selectMinimalRoleHardCases(observations: RoutingRegressionObserv
 
 export function evaluateRoutingRegression(input: RoutingRegressionInput): RoutingRegressionReport {
   if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some((key) => !["schemaVersion", "benchmarkId", "observations"].includes(key))
-    || input.schemaVersion !== 1 || typeof input.benchmarkId !== "string" || !SAFE_IDENTIFIER.test(input.benchmarkId) || !Array.isArray(input.observations)) {
-    invalid("Routing regression input is missing required version 1 fields");
+    || input.schemaVersion !== 2 || typeof input.benchmarkId !== "string" || !SAFE_IDENTIFIER.test(input.benchmarkId) || !Array.isArray(input.observations)) {
+    invalid("Routing regression input is missing required version 2 fields");
   }
   input.observations.forEach(validateObservation);
   const ids = new Set<string>();
@@ -203,6 +229,7 @@ export function evaluateRoutingRegression(input: RoutingRegressionInput): Routin
   const policies: Record<RegionRecord["policy"], number> = { replace: 0, "preserve-with-annotation": 0 };
   let mapped = 0;
   let deterministicallyClassified = 0;
+  const geometrySourceCounts: Record<BubbleGeometrySource, number> = { "line-polygons": 0, bbox: 0 };
   let legacyUnknownReplaceCount = 0;
   let unknownReplaceViolationCount = 0;
   const bubbleExternalOverlaps: number[] = [];
@@ -222,7 +249,8 @@ export function evaluateRoutingRegression(input: RoutingRegressionInput): Routin
     increment(category, routed.routingClass);
     runtimeRoles[routed.role] += 1;
     policies[routed.policy] += 1;
-    if (item.evidence?.provenance === "bubble-mask" && item.evidence.insideBubble === true && routed.role === "dialogue") mapped += 1;
+    if (item.evidence?.roleProvenance === "bubble-mask") geometrySourceCounts[item.evidence.geometrySource!] += 1;
+    if (item.evidence?.roleProvenance === "bubble-mask" && item.evidence.insideBubble === true && routed.role === "dialogue") mapped += 1;
     if (routed.routingClass !== "unknown") deterministicallyClassified += 1;
     if (routed.role === "unknown" && routed.policy === "replace") unknownReplaceViolationCount += 1;
     if (routed.role === "unknown") unknownPages.add(item.pageId);
@@ -237,8 +265,15 @@ export function evaluateRoutingRegression(input: RoutingRegressionInput): Routin
   const reviewedPageIds = new Set(input.observations.map((item) => item.pageId));
   const emptyPages = [...reviewedPageIds].filter((pageId) => !detectedByPage.has(pageId));
   const roleOrEmptyBlockedPages = new Set([...unknownPages, ...emptyPages]);
+  const polygonGate: RoutingRegressionReport["polygonGate"] = geometrySourceCounts["line-polygons"] === 0
+    ? { status: "failed", freezeEligible: false, reasonCode: "LINE_POLYGONS_UNAVAILABLE" }
+    : geometrySourceCounts.bbox > 0
+      ? { status: "failed", freezeEligible: false, reasonCode: "BBOX_FALLBACK_PRESENT" }
+      : geometrySourceCounts["line-polygons"] !== detectedRegionCount
+        ? { status: "failed", freezeEligible: false, reasonCode: "GEOMETRY_EVIDENCE_INCOMPLETE" }
+        : { status: "passed", freezeEligible: true };
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     benchmarkId: input.benchmarkId,
     regionCount: input.observations.length,
     detectedRegionCount,
@@ -249,6 +284,8 @@ export function evaluateRoutingRegression(input: RoutingRegressionInput): Routin
     policies,
     bubbleMapping: { mapped, total: detectedRegionCount, rate: rate(mapped, detectedRegionCount) },
     deterministicEvidence: { classified: deterministicallyClassified, total: detectedRegionCount, rate: rate(deterministicallyClassified, detectedRegionCount) },
+    geometrySourceCounts,
+    polygonGate,
     pageSafety: {
       reviewedPages: reviewedPageIds.size,
       pagesWithDetectedUnknown: unknownPages.size,

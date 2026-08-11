@@ -100,10 +100,10 @@ test("quality rules detect refusal, kana leakage, missing tokens, and low OCR", 
 });
 
 test("roles require native evidence or a high-confidence bubble mask", () => {
-  assert.deepEqual(classifyRole("sfx"), { role: "sfx", confidence: 1, provenance: "native" });
-  assert.deepEqual(classifyRole(undefined, { insideBubble: true, confidence: 0.95, provenance: "bubble-mask" }), { role: "dialogue", confidence: 0.95, provenance: "bubble-mask" });
-  assert.deepEqual(classifyRole(undefined, { insideBubble: true, confidence: 0.5, provenance: "bubble-mask" }), { role: "unknown", confidence: 0, provenance: "insufficient-evidence" });
-  assert.deepEqual(classifyRole(undefined, { insideBubble: false, confidence: 1, provenance: "bubble-mask" }), { role: "unknown", confidence: 0, provenance: "insufficient-evidence" });
+  assert.deepEqual(classifyRole("sfx"), { role: "sfx", confidence: 1, roleProvenance: "native" });
+  assert.deepEqual(classifyRole(undefined, { insideBubble: true, confidence: 0.95, roleProvenance: "bubble-mask" }), { role: "dialogue", confidence: 0.95, roleProvenance: "bubble-mask" });
+  assert.deepEqual(classifyRole(undefined, { insideBubble: true, confidence: 0.5, roleProvenance: "bubble-mask" }), { role: "unknown", confidence: 0, roleProvenance: "insufficient-evidence" });
+  assert.deepEqual(classifyRole(undefined, { insideBubble: false, confidence: 1, roleProvenance: "bubble-mask" }), { role: "unknown", confidence: 0, roleProvenance: "insufficient-evidence" });
   const make = (id: string): RegionRecord => ({
     schemaVersion: 1, id, pageId: "p1", order: Number(id.slice(1)), role: "dialogue", policy: "replace",
     sourceText: "山田", translatedText: "山田", ocrCandidates: [], translationCandidates: [], qaFlags: [],

@@ -11,6 +11,8 @@ export interface BoundingBox {
   height: number;
 }
 
+export type BubbleGeometrySource = "line-polygons" | "bbox";
+
 export interface QaFlag {
   code: string;
   severity: QaSeverity;
@@ -49,6 +51,7 @@ export interface RegionRecord {
   bbox?: BoundingBox;
   insideBubble?: boolean;
   bubbleInstanceId?: string;
+  geometrySource?: BubbleGeometrySource;
   roleConfidence?: number;
   roleProvenance?: "native" | "bubble-mask" | "insufficient-evidence";
   ocrConfidence?: number;

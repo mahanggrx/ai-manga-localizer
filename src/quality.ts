@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { bubbleEvidenceKey } from "./bubble-mask.ts";
+import { BUBBLE_ROLE_MIN_OVERLAP, bubbleEvidenceKey } from "./bubble-mask.ts";
 import { LocalizerError } from "./errors.ts";
 import type { BubbleMaskEvidence } from "./bubble-mask.ts";
 import type { BoundingBox, JsonObject, JsonValue, LocalizerConfig, QaFlag, RegionRecord } from "./types.ts";
@@ -119,9 +119,9 @@ export function extractRegionsFromScene(scene: JsonObject, options: { ocrEngine:
     const bubbleEvidence = options.bubbleEvidence?.get(bubbleEvidenceKey(item.pageId, item.id));
     const insideBubble = bubbleEvidence?.insideBubble ?? item.insideBubble;
     const roleDecision = classifyRole(item.role, bubbleEvidence
-      ? { insideBubble, confidence: bubbleEvidence.confidence, provenance: "bubble-mask" }
+      ? { insideBubble, confidence: bubbleEvidence.confidence, roleProvenance: "bubble-mask" }
       : item.insideBubble !== undefined
-        ? { insideBubble, confidence: 1, provenance: "native" }
+        ? { insideBubble, confidence: 1, roleProvenance: "native" }
         : undefined);
     const role = roleDecision.role;
     const region: RegionRecord = {
@@ -136,8 +136,9 @@ export function extractRegionsFromScene(scene: JsonObject, options: { ocrEngine:
       ...(item.bbox ? { bbox: item.bbox } : {}),
       ...(insideBubble !== undefined ? { insideBubble } : {}),
       ...(bubbleEvidence?.bubbleInstanceId ? { bubbleInstanceId: bubbleEvidence.bubbleInstanceId } : {}),
+      ...(bubbleEvidence ? { geometrySource: bubbleEvidence.geometrySource } : {}),
       roleConfidence: roleDecision.confidence,
-      roleProvenance: roleDecision.provenance,
+      roleProvenance: roleDecision.roleProvenance,
       ...(item.confidence !== undefined ? { ocrConfidence: item.confidence } : {}),
       ocrCandidates: [{ engine: options.ocrEngine, text: sourceText, confidence: item.confidence, selected: true, selectionReason: "primary-engine-output" }],
       translationCandidates: translatedText ? [{ model: options.translationModel, text: translatedText, selected: true, selectionReason: "latest-local-pipeline-output", route: "local" }] : [],
@@ -205,7 +206,7 @@ export function chunkPageIds(pageIds: string[], chunkPages: number, contextOverl
 export interface RoleDecision {
   role: RegionRecord["role"];
   confidence: number;
-  provenance: NonNullable<RegionRecord["roleProvenance"]>;
+  roleProvenance: NonNullable<RegionRecord["roleProvenance"]>;
 }
 
 export function replacementPolicyForRole(role: RegionRecord["role"]): RegionRecord["policy"] {
@@ -214,15 +215,15 @@ export function replacementPolicyForRole(role: RegionRecord["role"]): RegionReco
 
 export function classifyRole(
   nativeRole: RegionRecord["role"] | undefined,
-  evidence?: { insideBubble?: boolean; confidence: number; provenance: "native" | "bubble-mask" },
+  evidence?: { insideBubble?: boolean; confidence: number; roleProvenance: "native" | "bubble-mask" },
 ): RoleDecision {
   if (nativeRole && (["dialogue", "caption", "sfx"] as const).includes(nativeRole as "dialogue" | "caption" | "sfx")) {
-    return { role: nativeRole, confidence: 1, provenance: "native" };
+    return { role: nativeRole, confidence: 1, roleProvenance: "native" };
   }
-  if (evidence?.insideBubble === true && evidence.confidence >= 0.8) {
-    return { role: "dialogue", confidence: evidence.confidence, provenance: evidence.provenance };
+  if (evidence?.insideBubble === true && evidence.confidence >= BUBBLE_ROLE_MIN_OVERLAP) {
+    return { role: "dialogue", confidence: evidence.confidence, roleProvenance: evidence.roleProvenance };
   }
-  return { role: "unknown", confidence: 0, provenance: "insufficient-evidence" };
+  return { role: "unknown", confidence: 0, roleProvenance: "insufficient-evidence" };
 }
 
 export function containsJapaneseKana(text: string): boolean {

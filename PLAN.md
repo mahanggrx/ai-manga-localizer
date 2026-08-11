@@ -6,7 +6,7 @@ Last updated: 2026-08-11
 
 The project is in **M2 Existing-data Routing Regression**.
 
-The engineering skeleton and M1 bubble-mask adapter are established, several real local routes have been exercised, and a private 50-page AI-assisted `review-v5` set is available as a working gold set. M2 has completed a bbox-based offline replay against the existing KHR without rerunning detection, OCR, translation, or rendering. Exact replay of the real `linePolygons` route remains open because those polygons were not preserved in review-v5.
+The engineering skeleton and M1 bubble-mask adapter are established, several real local routes have been exercised, and a private 50-page AI-assisted `review-v5` set is available as a working gold set. M2 has completed both the offline bbox replay and a read-only live scene replay without rerunning detection, OCR, translation, or rendering. The Koharu 0.61.2 production route has no effective `linePolygons`, so polygon threshold validation is explicitly unavailable rather than represented by bbox fallback results.
 
 This document is the public, repository-level source of truth for project direction. Private images, OCR text, translations, prompts, model files, and review data remain outside Git. Aggregate measurements may be recorded here when they do not expose private content.
 
@@ -94,13 +94,15 @@ A three-page Koharu 0.61.2 live probe found:
 - label value `0` for background and non-zero integer labels consistent with distinct bubble instances;
 - text-region bubble hits of 10/10, 1/5, and 5/27 across the three pages.
 
-Koharu therefore provides native bubble-mask evidence, and the M1 adapter now consumes it. M2 verifies that `unknown -> replace` is no longer the default because unidentified artistic or structural text must not be erased.
+The follow-up 50-page live scene probe found 387 text nodes and 387 null `linePolygons` fields. The real adapter route therefore used transform bboxes for all 387 detected nodes. Koharu 0.61.2 Anime Text, Comic Text Detector, Comic Text & Bubble Detector, and PP-DocLayout were also verified not to populate effective non-empty `linePolygons` on text nodes. No detection-only run is needed or planned because it would not validate a geometry route that these engines do not produce.
+
+Koharu therefore provides native bubble-mask evidence, and the M1 adapter now consumes it with explicit geometry provenance. M2 verifies that `unknown -> replace` is no longer the default because unidentified artistic or structural text must not be erased.
 
 ### Existing-data routing regression
 
 The M2 offline replay associated the existing 50-page KHR with review-v5 by serialized page UUID and content-addressed mask references. Each page had two page-sized label masks. The first multi-instance slot was treated as the bubble mask and the second binary slot as the segment mask. This inference reproduced the prior three-page live probe exactly: 10/10, 1/5, and 5/27 bubble hits.
 
-Using the M1 thresholds of 0.80 for inside-bubble and 0.05 for outside-bubble, the bbox replay found:
+Using thresholds of 0.80 for inside-bubble and 0.05 for outside-bubble, the Koharu 0.61.2 bbox production-route replay found:
 
 | Measurement | Detected regions | All reviewed regions |
 | --- | ---: | ---: |
@@ -109,7 +111,9 @@ Using the M1 thresholds of 0.80 for inside-bubble and 0.05 for outside-bubble, t
 | Geometrically uncertain | 0 / 387 (0%) | 0 / 388 (0%) |
 | `unknown -> replace` violations | 0 | 0 |
 
-All 70 detected bubble-external regions now resolve to runtime role `unknown` with `preserve-with-annotation`; the 317 bubble-contained regions resolve to `dialogue` with `replace`. The legacy manifest had all 387 detected regions as `unknown + replace`. Unknown regions occur on 17 pages, and the current render-safety gate preserves those pages before inpainting or rendering; the one zero-detection page is separately preserved, leaving 32/50 pages free of the unknown-or-empty role gate before other QA checks. Across detected regions, outside-bubble overlap had a maximum of 0, while mapped dialogue had a minimum overlap of 0.9704 and minimum dominant-label share of 0.9980. This is strong separation for the stored bboxes, not evidence that every real polygon variant behaves identically.
+All 70 detected bubble-external regions now resolve to runtime role `unknown` with `preserve-with-annotation`; the 317 bubble-contained regions resolve to `dialogue` with `replace`. The legacy manifest had all 387 detected regions as `unknown + replace`. Unknown regions occur on 17 pages, and the current render-safety gate preserves those pages before inpainting or rendering; the one zero-detection page is separately preserved, leaving 32/50 pages free of the unknown-or-empty role gate before other QA checks. Across detected regions, outside-bubble overlap had a maximum of 0, while mapped dialogue had a minimum overlap of 0.970428 and minimum dominant-label share of 0.9980. The live replay again produced mapped 317, external 70, geometric unknown 0, and `unknown -> replace` violations 0.
+
+The 0.80/0.05 thresholds are frozen only for the Koharu 0.61.2 bbox production route. The `line-polygons` route is unavailable and unvalidated, so no polygon threshold is frozen. Versioned routing reports count `line-polygons` and bbox evidence separately and expose a strict polygon gate; all-bbox data receives `reasonCode = "LINE_POLYGONS_UNAVAILABLE"` and is not freeze-eligible. Mixed or incomplete geometry data is also not a polygon-only result; only all-polygon evidence across detected observations can pass the polygon gate.
 
 The detected distribution by page stratum was:
 
@@ -123,7 +127,7 @@ The detected distribution by page stratum was:
 
 A seven-region private hard-case set now covers one detected bubble-external example from every stratum, the single missed artistic-text region, and one bubble-mapped region on a structural-negative page. It contains stable IDs and numeric evidence only; no image, OCR text, translation, prompt, or blob identifier is recorded.
 
-Current decision: deterministic bubble geometry is sufficient for preservation-first safety on the bbox replay, but not for useful coverage by itself because the conservative unknown gate blocks 17 mixed-content pages. It is not sufficient to infer the semantic subtype of bubble-external text, so external text remains unknown and preserved. No classifier should be added until the seven hard cases receive a targeted role spot check. A minimal read-only live probe is still required before freezing thresholds: load the existing KHR in Koharu, fetch the 50-page scene JSON and referenced bubble-mask blobs, and replay the existing adapter against real `linePolygons`; do not run detection, OCR, translation, inpainting, or rendering.
+Current decision: deterministic bubble geometry is sufficient for preservation-first safety on the validated bbox production route, but not for useful coverage by itself because the conservative unknown gate blocks 17 mixed-content pages. It is not sufficient to infer the semantic subtype of bubble-external text, so external text remains unknown and preserved. No classifier should be added until the seven hard cases receive a targeted visual role spot check. The polygon route remains unavailable and is not a reason to schedule detection-only work.
 
 ## Architecture decisions
 
@@ -154,7 +158,8 @@ Current decision: deterministic bubble geometry is sufficient for preservation-f
 - freezing a model because it is already present in configuration;
 - treating a partial smoke as evidence of route superiority;
 - adding speaker-aware, character-aware, or multi-model semantic machinery before real errors demonstrate that it is a primary bottleneck;
-- turning visual QA warnings into an automatic release gate before calibration on real images.
+- turning visual QA warnings into an automatic release gate before calibration on real images;
+- scheduling detection-only work to seek `linePolygons` from Koharu 0.61.2 engines already verified not to populate them.
 
 ## Target V1 pipeline
 
@@ -180,6 +185,7 @@ The router must distinguish evidence provenance:
 - `derivedRoleEvidence`: mask overlap, geometry, typography, or another deterministic inference;
 - `roleConfidence`: a calibrated confidence for the derived decision;
 - `roleProvenance`: the exact rule or model that produced the decision;
+- `geometrySource`: `line-polygons` or bbox geometry used for the bubble-mask measurement, kept separate from role provenance;
 - `bubbleInstanceId`: the non-zero label shared by text regions in the same bubble.
 
 High-confidence bubble-contained text may be treated as dialogue. Bubble-external text is not automatically a sound effect; it remains unknown until a separate rule has adequate evidence.
@@ -200,7 +206,7 @@ Completion evidence:
 
 ### M1 — Bubble-mask scene adapter
 
-Status: **complete and committed; unit, mocked contract, CLI, dependency, privacy, and adversarial checks passed; real-data polygon threshold calibration remains an M2 follow-up**
+Status: **complete and committed; unit, mocked contract, CLI, dependency, privacy, and adversarial checks passed; polygon calibration is unavailable on the verified Koharu 0.61.2 routes**
 
 Scope:
 
@@ -208,7 +214,7 @@ Scope:
 - in-memory lossless WebP mask decoding;
 - page-coordinate validation;
 - text polygon or box overlap with integer bubble labels;
-- `insideBubble`, `bubbleInstanceId`, confidence, and provenance records;
+- `insideBubble`, `bubbleInstanceId`, confidence, role provenance, and geometry-source records;
 - preservation-first policy for unknown roles;
 - schema and contract tests;
 - malformed image, dimension mismatch, oversized input, coordinate, privacy, and failure-closed tests.
@@ -225,7 +231,7 @@ Estimated work: one focused implementation and review task.
 
 ### M2 — Existing-data routing regression
 
-Status: **bbox regression complete; exact `linePolygons` replay pending a minimal read-only live probe**
+Status: **bbox production-route regression and live geometry probe complete; seven-case visual role check remains before M3; `line-polygons` is unavailable and unvalidated**
 
 Use existing KHR and working-gold artifacts without rerunning detection, OCR, or translation models where possible.
 
@@ -237,20 +243,25 @@ Goals:
 - extract the smallest set of unresolved role hard cases;
 - decide whether deterministic geometry and typography are sufficient before adding a classifier.
 
-Completed offline evidence:
+Completed M2 evidence:
 
 - 317/387 detected regions map to a bubble instance and 70/387 are deterministically bubble-external;
 - all 387 detected regions fall outside the uncertainty band under stored bbox geometry;
 - all 70 runtime unknown regions are preserved and zero enter replacement;
 - those unknowns trigger page preservation on 17/50 pages, while one additional zero-detection page is preserved separately;
 - a seven-region private hard-case set covers the unresolved semantic role classes;
-- prior three-page live-probe signatures are reproduced exactly without starting Koharu.
+- prior three-page live-probe signatures are reproduced exactly without starting Koharu;
+- the 50-page live replay produced mapped 317, external 70, geometric unknown 0, and `unknown -> replace` violations 0;
+- all 387 live text nodes had null `linePolygons`, so all effective geometry was bbox provenance;
+- mapped bbox overlap had a minimum of 0.970428 and external bbox overlap had a maximum of 0;
+- 0.80/0.05 is frozen only for the Koharu 0.61.2 bbox production route;
+- the strict polygon gate is not freeze-eligible when effective non-empty `linePolygons` are absent.
 
 Remaining completion gate:
 
-- replay the adapter against real 50-page `linePolygons` through a read-only load of the existing KHR, then confirm that mapping, separation, and safety counts do not regress.
+- visually verify the semantic roles of the seven hard cases, then proceed to M3 without a detection-only run.
 
-Estimated work: one focused offline evaluation task, plus a small live read-only probe if existing artifacts are insufficient.
+Estimated work: one targeted visual role check.
 
 ### M3 — OCR arbitration
 
@@ -370,7 +381,6 @@ The repository must not contain:
 
 ## Immediate next actions
 
-1. Perform the minimal read-only KHR scene probe described in M2; do not start any model or rerun a pipeline stage.
-2. Spot-check the seven private role hard cases before considering an external-text classifier.
-3. Freeze the bubble-overlap thresholds only if the real `linePolygons` replay preserves the bbox separation and safety result.
-4. Proceed to M3 OCR arbitration after the M2 polygon gate is resolved or explicitly deferred.
+1. Visually spot-check the seven private role hard cases before considering an external-text classifier.
+2. Record only aggregate role conclusions in public artifacts; do not expose private case identifiers or content.
+3. Proceed to M3 OCR arbitration after the targeted role check; do not schedule detection-only or claim polygon validation.

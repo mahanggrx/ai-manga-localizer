@@ -1,6 +1,6 @@
 import sharp from "sharp";
 import { LocalizerError } from "./errors.ts";
-import type { BoundingBox, JsonObject } from "./types.ts";
+import type { BoundingBox, BubbleGeometrySource, JsonObject } from "./types.ts";
 
 export const BUBBLE_MASK_MAX_PIXELS = 25_000_000;
 export const BUBBLE_MASK_MAX_REGION_SCAN_PIXELS = 4_000_000;
@@ -20,7 +20,9 @@ type Polygon = Point[];
 export interface BubbleRoleEvidence {
   insideBubble?: boolean;
   bubbleInstanceId?: string;
+  geometrySource: BubbleGeometrySource;
   overlapRate: number;
+  dominantShare: number;
   confidence: number;
 }
 
@@ -42,6 +44,17 @@ interface ScenePage {
   width: number;
   height: number;
   nodes: Record<string, unknown>[];
+}
+
+interface TextGeometry {
+  geometrySource: BubbleGeometrySource;
+  bbox?: BoundingBox;
+  polygons?: Polygon[];
+}
+
+export interface BubbleOverlapDecision {
+  insideBubble?: boolean;
+  confidence: number;
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -170,21 +183,26 @@ function pointInsidePolygon(x: number, y: number, polygon: Polygon): boolean {
   return inside;
 }
 
-function geometryForNode(node: Record<string, unknown>): { bbox?: BoundingBox; polygons?: Polygon[] } | undefined {
+function geometryForNode(node: Record<string, unknown>): TextGeometry | undefined {
   const kind = record(node.kind);
   const text = record(kind?.text);
   if (!text) return undefined;
   const polygonValue = text.linePolygons ?? text.line_polygons ?? node.linePolygons ?? node.line_polygons;
-  const polygons = parsePolygons(polygonValue);
-  if (polygons !== undefined) return polygons.length > 0 ? { polygons } : undefined;
+  const hasPolygonValue = polygonValue !== undefined
+    && polygonValue !== null
+    && !(Array.isArray(polygonValue) && polygonValue.length === 0);
+  if (hasPolygonValue) {
+    const polygons = parsePolygons(polygonValue);
+    return polygons && polygons.length > 0 ? { geometrySource: "line-polygons", polygons } : undefined;
+  }
   const transform = record(node.transform);
   const rotation = Number(transform?.rotationDeg ?? transform?.rotation_deg ?? 0);
   if (!Number.isFinite(rotation) || rotation !== 0) return undefined;
   const bbox = parseBbox(node.transform ?? node.bbox ?? node.bounds);
-  return bbox ? { bbox } : undefined;
+  return bbox ? { geometrySource: "bbox", bbox } : undefined;
 }
 
-function geometryBounds(geometry: { bbox?: BoundingBox; polygons?: Polygon[] }): BoundingBox | undefined {
+function geometryBounds(geometry: TextGeometry): BoundingBox | undefined {
   if (geometry.bbox) return geometry.bbox;
   const points = geometry.polygons?.flat();
   if (!points || points.length === 0) return undefined;
@@ -195,10 +213,21 @@ function geometryBounds(geometry: { bbox?: BoundingBox; polygons?: Polygon[] }):
   return { x, y, width: Math.max(...xs) - x, height: Math.max(...ys) - y };
 }
 
+export function deriveBubbleOverlapDecision(overlapRate: number, dominantShare: number): BubbleOverlapDecision {
+  if (![overlapRate, dominantShare].every((value) => Number.isFinite(value) && value >= 0 && value <= 1)) {
+    throw new LocalizerError("BUBBLE_MASK_OVERLAP_INVALID", "Bubble mask overlap evidence is invalid");
+  }
+  if (overlapRate >= BUBBLE_ROLE_MIN_OVERLAP && dominantShare >= BUBBLE_ROLE_MIN_OVERLAP) {
+    return { insideBubble: true, confidence: Math.min(overlapRate, dominantShare) };
+  }
+  if (overlapRate <= BUBBLE_OUTSIDE_MAX_OVERLAP) return { insideBubble: false, confidence: 1 - overlapRate };
+  return { confidence: Math.max(overlapRate, 1 - overlapRate) };
+}
+
 function overlapEvidence(
   pageId: string,
   mask: DecodedMask,
-  geometry: { bbox?: BoundingBox; polygons?: Polygon[] },
+  geometry: TextGeometry,
   maxRegionScanPixels: number,
   pageScanBudget: { remaining: number },
 ): BubbleRoleEvidence | undefined {
@@ -233,11 +262,13 @@ function overlapEvidence(
   const dominant = [...labelCounts.entries()].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0];
   const dominantShare = dominant ? dominant[1] / nonzeroPixels : 0;
   const bubbleInstanceId = dominant && dominantShare >= BUBBLE_ROLE_MIN_OVERLAP ? `${pageId}:${dominant[0]}` : undefined;
-  if (overlapRate >= BUBBLE_ROLE_MIN_OVERLAP && bubbleInstanceId) {
-    return { insideBubble: true, bubbleInstanceId, overlapRate, confidence: Math.min(overlapRate, dominantShare) };
-  }
-  if (overlapRate <= BUBBLE_OUTSIDE_MAX_OVERLAP) return { insideBubble: false, overlapRate, confidence: 1 - overlapRate };
-  return { ...(bubbleInstanceId ? { bubbleInstanceId } : {}), overlapRate, confidence: Math.max(overlapRate, 1 - overlapRate) };
+  return {
+    ...deriveBubbleOverlapDecision(overlapRate, dominantShare),
+    ...(bubbleInstanceId ? { bubbleInstanceId } : {}),
+    geometrySource: geometry.geometrySource,
+    overlapRate,
+    dominantShare,
+  };
 }
 
 export function bubbleEvidenceKey(pageId: string, regionId: string): string {

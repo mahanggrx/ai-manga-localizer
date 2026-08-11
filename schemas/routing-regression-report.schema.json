@@ -6,11 +6,11 @@
   "required": [
     "schemaVersion", "benchmarkId", "regionCount", "detectedRegionCount", "distribution",
     "detectedDistribution", "detectedByCategory", "runtimeRoles", "policies", "bubbleMapping",
-    "deterministicEvidence", "pageSafety", "overlapSeparation", "legacyUnknownReplaceCount",
+    "deterministicEvidence", "geometrySourceCounts", "polygonGate", "pageSafety", "overlapSeparation", "legacyUnknownReplaceCount",
     "unknownReplaceViolationCount", "hardCases"
   ],
   "properties": {
-    "schemaVersion": { "const": 1 },
+    "schemaVersion": { "const": 2 },
     "benchmarkId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
     "regionCount": { "type": "integer", "minimum": 0 },
     "detectedRegionCount": { "type": "integer", "minimum": 0 },
@@ -87,6 +87,25 @@
       },
       "additionalProperties": false
     },
+    "geometrySourceCounts": {
+      "type": "object",
+      "required": ["line-polygons", "bbox"],
+      "properties": {
+        "line-polygons": { "type": "integer", "minimum": 0 },
+        "bbox": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "polygonGate": {
+      "type": "object",
+      "required": ["status", "freezeEligible"],
+      "properties": {
+        "status": { "type": "string", "enum": ["passed", "failed"] },
+        "freezeEligible": { "type": "boolean" },
+        "reasonCode": { "type": "string", "enum": ["LINE_POLYGONS_UNAVAILABLE", "BBOX_FALLBACK_PRESENT", "GEOMETRY_EVIDENCE_INCOMPLETE"] }
+      },
+      "additionalProperties": false
+    },
     "pageSafety": {
       "type": "object",
       "required": ["reviewedPages", "pagesWithDetectedUnknown", "pagesWithNoDetectedRegions", "pagesWithoutUnknownOrEmptyBlock"],
@@ -124,6 +143,7 @@
             "type": "array",
             "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}(:[a-z0-9][a-z0-9-]{0,63})?$" }
           },
+          "geometrySource": { "type": "string", "enum": ["line-polygons", "bbox"] },
           "overlapRate": { "type": "number", "minimum": 0, "maximum": 1 },
           "dominantShare": { "type": "number", "minimum": 0, "maximum": 1 }
         },

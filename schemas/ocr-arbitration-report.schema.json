@@ -1,0 +1,322 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ocr-arbitration-report.schema.json",
+  "title": "OcrArbitrationReport",
+  "type": "object",
+  "required": ["schemaVersion", "evaluationId", "source", "contract", "association", "denominators", "crossValidation", "qa", "softDiagnostics", "strategies", "decision"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "evaluationId": { "$ref": "#/$defs/safeIdentifier" },
+    "source": {
+      "type": "object",
+      "required": ["baseCodeRevision", "benchmarkInputSha256", "baselineReportSha256", "routingObservationsSha256", "benchmarkId", "routingBenchmarkId"],
+      "properties": {
+        "baseCodeRevision": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "benchmarkInputSha256": { "$ref": "#/$defs/sha256" },
+        "baselineReportSha256": { "$ref": "#/$defs/sha256" },
+        "routingObservationsSha256": { "$ref": "#/$defs/sha256" },
+        "benchmarkId": { "$ref": "#/$defs/safeIdentifier" },
+        "routingBenchmarkId": { "$ref": "#/$defs/safeIdentifier" }
+      },
+      "additionalProperties": false
+    },
+    "contract": {
+      "type": "object",
+      "required": ["normalization", "crossValidation", "trainingObjective", "hardAnomalies", "softDiagnosticsUsedForSelection", "policies", "minimumGroupSupport", "fallbackHierarchy", "bootstrap"],
+      "properties": {
+        "normalization": { "const": "NFKC_REMOVE_WHITESPACE" },
+        "crossValidation": { "const": "LEAVE_ONE_PAGE_OUT" },
+        "trainingObjective": { "const": "EXACT_ERROR_RATE_PLUS_CORPUS_CER" },
+        "hardAnomalies": { "type": "array", "minItems": 6, "items": { "$ref": "#/$defs/hardAnomaly" } },
+        "softDiagnosticsUsedForSelection": { "const": false },
+        "policies": { "type": "array", "minItems": 4, "items": { "$ref": "#/$defs/policy" } },
+        "minimumGroupSupport": { "type": "integer", "minimum": 1 },
+        "fallbackHierarchy": {
+          "type": "object",
+          "required": ["agreementCategory", "agreementCategoryBubble"],
+          "properties": {
+            "agreementCategory": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+            "agreementCategoryBubble": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
+          },
+          "additionalProperties": false
+        },
+        "bootstrap": { "$ref": "#/$defs/bootstrap" }
+      },
+      "additionalProperties": false
+    },
+    "association": {
+      "type": "object",
+      "required": ["benchmarkRegions", "routingObservations", "matchedRegions", "eligibleRegions", "pageCount", "evaluatedPageCount"],
+      "properties": {
+        "benchmarkRegions": { "$ref": "#/$defs/nonnegativeInteger" },
+        "routingObservations": { "$ref": "#/$defs/nonnegativeInteger" },
+        "matchedRegions": { "$ref": "#/$defs/nonnegativeInteger" },
+        "eligibleRegions": { "$ref": "#/$defs/nonnegativeInteger" },
+        "pageCount": { "$ref": "#/$defs/nonnegativeInteger" },
+        "evaluatedPageCount": { "$ref": "#/$defs/nonnegativeInteger" }
+      },
+      "additionalProperties": false
+    },
+    "denominators": { "$ref": "#/$defs/denominators" },
+    "crossValidation": {
+      "type": "object",
+      "required": ["foldCount", "minimumTrainingPages", "maximumTrainingPages", "minimumTestRegions", "maximumTestRegions"],
+      "properties": {
+        "foldCount": { "$ref": "#/$defs/nonnegativeInteger" },
+        "minimumTrainingPages": { "$ref": "#/$defs/nonnegativeInteger" },
+        "maximumTrainingPages": { "$ref": "#/$defs/nonnegativeInteger" },
+        "minimumTestRegions": { "$ref": "#/$defs/nonnegativeInteger" },
+        "maximumTestRegions": { "$ref": "#/$defs/nonnegativeInteger" }
+      },
+      "additionalProperties": false
+    },
+    "qa": {
+      "type": "object",
+      "required": ["hardCandidateAnomalyCounts", "hardCandidateResiduals", "jointWrongAgreementCount", "jointWrongAgreementResiduals"],
+      "properties": {
+        "hardCandidateAnomalyCounts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["engine", "reason", "count"],
+            "properties": {
+              "engine": { "$ref": "#/$defs/safeIdentifier" },
+              "reason": { "$ref": "#/$defs/hardAnomaly" },
+              "count": { "$ref": "#/$defs/nonnegativeInteger" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "hardCandidateResiduals": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["regionRef", "engine", "reasons"],
+            "properties": {
+              "regionRef": { "$ref": "#/$defs/sha256" },
+              "engine": { "$ref": "#/$defs/safeIdentifier" },
+              "reasons": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/hardAnomaly" } }
+            },
+            "additionalProperties": false
+          }
+        },
+        "jointWrongAgreementCount": { "$ref": "#/$defs/nonnegativeInteger" },
+        "jointWrongAgreementResiduals": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["regionRef"],
+            "properties": { "regionRef": { "$ref": "#/$defs/sha256" } },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "softDiagnostics": {
+      "type": "object",
+      "required": ["usedForSelection", "candidates", "pair"],
+      "properties": {
+        "usedForSelection": { "const": false },
+        "candidates": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "type": "object",
+            "required": ["engine", "availableRegions", "normalizedLength", "maximumRepeatedRun", "repeatedBlockSignalRegions"],
+            "properties": {
+              "engine": { "$ref": "#/$defs/safeIdentifier" },
+              "availableRegions": { "$ref": "#/$defs/nonnegativeInteger" },
+              "normalizedLength": { "$ref": "#/$defs/distribution" },
+              "maximumRepeatedRun": { "$ref": "#/$defs/distribution" },
+              "repeatedBlockSignalRegions": { "$ref": "#/$defs/nonnegativeInteger" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "pair": {
+          "type": "object",
+          "required": ["pairedRegions", "normalizedLengthRatio", "scriptComponentLoss"],
+          "properties": {
+            "pairedRegions": { "$ref": "#/$defs/nonnegativeInteger" },
+            "normalizedLengthRatio": { "$ref": "#/$defs/distribution" },
+            "scriptComponentLoss": {
+              "type": "array",
+              "minItems": 5,
+              "items": {
+                "type": "object",
+                "required": ["script", "paddleMissingRegions", "mangaMissingRegions"],
+                "properties": {
+                  "script": { "type": "string", "enum": ["han", "hiragana", "katakana", "latin", "number"] },
+                  "paddleMissingRegions": { "$ref": "#/$defs/nonnegativeInteger" },
+                  "mangaMissingRegions": { "$ref": "#/$defs/nonnegativeInteger" }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "strategies": {
+      "type": "array",
+      "minItems": 4,
+      "items": {
+        "type": "object",
+        "required": ["policy", "overall", "byPageCategory", "byBubbleRelation", "selectionCounts", "bootstrapComparisons", "structuralNegativeSafety", "freezeGate"],
+        "properties": {
+          "policy": { "$ref": "#/$defs/policy" },
+          "overall": { "$ref": "#/$defs/metrics" },
+          "byPageCategory": { "type": "array", "items": { "$ref": "#/$defs/stratumMetrics" } },
+          "byBubbleRelation": { "type": "array", "items": { "$ref": "#/$defs/stratumMetrics" } },
+          "selectionCounts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["reason", "count"],
+              "properties": {
+                "reason": { "type": "string", "enum": ["fixed-paddle", "fixed-manga", "normalized-agreement", "sole-safe-paddle", "sole-safe-manga", "category-bubble", "category", "bubble", "global", "paddle-fallback", "no-safe-candidate"] },
+                "count": { "$ref": "#/$defs/nonnegativeInteger" }
+              },
+              "additionalProperties": false
+            }
+          },
+          "bootstrapComparisons": {
+            "type": "array",
+            "minItems": 2,
+            "items": {
+              "type": "object",
+              "required": ["baselinePolicy", "exactRateDelta", "corpusCerDelta"],
+              "properties": {
+                "baselinePolicy": { "type": "string", "enum": ["always-paddle", "always-manga"] },
+                "exactRateDelta": { "$ref": "#/$defs/deltaInterval" },
+                "corpusCerDelta": { "$ref": "#/$defs/deltaInterval" }
+              },
+              "additionalProperties": false
+            }
+          },
+          "structuralNegativeSafety": { "$ref": "#/$defs/structuralSafety" },
+          "freezeGate": { "$ref": "#/$defs/freezeGate" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "decision": {
+      "type": "object",
+      "required": ["status", "reasons"],
+      "properties": {
+        "status": { "type": "string", "enum": ["FREEZE", "DO_NOT_FREEZE"] },
+        "selectedPolicy": { "$ref": "#/$defs/policy" },
+        "reasons": { "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" } }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "safeIdentifier": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "nonnegativeInteger": { "type": "integer", "minimum": 0 },
+    "nonnegativeNumber": { "type": "number", "minimum": 0 },
+    "hardAnomaly": { "type": "string", "enum": ["candidate-missing", "normalized-empty", "replacement-character", "unpaired-surrogate", "forbidden-control", "bidi-control"] },
+    "policy": { "type": "string", "enum": ["always-paddle", "always-manga", "agreement-category", "agreement-category-bubble"] },
+    "bootstrap": {
+      "type": "object",
+      "required": ["seed", "replicates", "confidenceLevel"],
+      "properties": {
+        "seed": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+        "replicates": { "type": "integer", "minimum": 100, "maximum": 100000 },
+        "confidenceLevel": { "const": 0.95 }
+      },
+      "additionalProperties": false
+    },
+    "denominators": {
+      "type": "object",
+      "required": ["workingGoldRegions", "detectorOutputRegions", "missedDetectionRegions", "ocrEligibleDetectedRegions", "excludedDetectedRegions", "pairedEligibleRegions"],
+      "properties": {
+        "workingGoldRegions": { "$ref": "#/$defs/nonnegativeInteger" },
+        "detectorOutputRegions": { "$ref": "#/$defs/nonnegativeInteger" },
+        "missedDetectionRegions": { "$ref": "#/$defs/nonnegativeInteger" },
+        "ocrEligibleDetectedRegions": { "$ref": "#/$defs/nonnegativeInteger" },
+        "excludedDetectedRegions": { "$ref": "#/$defs/nonnegativeInteger" },
+        "pairedEligibleRegions": { "$ref": "#/$defs/nonnegativeInteger" }
+      },
+      "additionalProperties": false
+    },
+    "metrics": {
+      "type": "object",
+      "required": ["regionCount", "exactRegions", "exactRate", "goldCharacters", "editDistance", "corpusCer", "regionMacroCer", "p50Cer", "p90Cer", "p95Cer", "maxCer", "cerAtMost3PercentRegions", "cerAtMost3PercentRate"],
+      "properties": {
+        "regionCount": { "$ref": "#/$defs/nonnegativeInteger" },
+        "exactRegions": { "$ref": "#/$defs/nonnegativeInteger" },
+        "exactRate": { "type": "number", "minimum": 0, "maximum": 1 },
+        "goldCharacters": { "$ref": "#/$defs/nonnegativeInteger" },
+        "editDistance": { "$ref": "#/$defs/nonnegativeInteger" },
+        "corpusCer": { "$ref": "#/$defs/nonnegativeNumber" },
+        "regionMacroCer": { "$ref": "#/$defs/nonnegativeNumber" },
+        "p50Cer": { "$ref": "#/$defs/nonnegativeNumber" },
+        "p90Cer": { "$ref": "#/$defs/nonnegativeNumber" },
+        "p95Cer": { "$ref": "#/$defs/nonnegativeNumber" },
+        "maxCer": { "$ref": "#/$defs/nonnegativeNumber" },
+        "cerAtMost3PercentRegions": { "$ref": "#/$defs/nonnegativeInteger" },
+        "cerAtMost3PercentRate": { "type": "number", "minimum": 0, "maximum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "distribution": {
+      "type": "object",
+      "required": ["count", "p50", "p90", "p95", "max"],
+      "properties": {
+        "count": { "$ref": "#/$defs/nonnegativeInteger" },
+        "p50": { "$ref": "#/$defs/nonnegativeNumber" },
+        "p90": { "$ref": "#/$defs/nonnegativeNumber" },
+        "p95": { "$ref": "#/$defs/nonnegativeNumber" },
+        "max": { "$ref": "#/$defs/nonnegativeNumber" }
+      },
+      "additionalProperties": false
+    },
+    "stratumMetrics": {
+      "type": "object",
+      "required": ["stratum", "metrics"],
+      "properties": {
+        "stratum": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+        "metrics": { "$ref": "#/$defs/metrics" }
+      },
+      "additionalProperties": false
+    },
+    "deltaInterval": {
+      "type": "object",
+      "required": ["estimate", "lower", "upper", "crossesZero"],
+      "properties": {
+        "estimate": { "type": "number" },
+        "lower": { "type": "number" },
+        "upper": { "type": "number" },
+        "crossesZero": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "structuralSafety": {
+      "type": "object",
+      "required": ["exactNotWorseThanPaddle", "corpusCerNotWorseThanPaddle", "passed"],
+      "properties": {
+        "exactNotWorseThanPaddle": { "type": "boolean" },
+        "corpusCerNotWorseThanPaddle": { "type": "boolean" },
+        "passed": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "freezeGate": {
+      "type": "object",
+      "required": ["simultaneousPointImprovementOverBoth", "confidenceIntervalsExcludeZeroInImprovementDirection", "structuralNegativeSafetyPassed", "passed"],
+      "properties": {
+        "simultaneousPointImprovementOverBoth": { "type": "boolean" },
+        "confidenceIntervalsExcludeZeroInImprovementDirection": { "type": "boolean" },
+        "structuralNegativeSafetyPassed": { "type": "boolean" },
+        "passed": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

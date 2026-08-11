@@ -270,7 +270,7 @@ Estimated work: one targeted visual role check.
 
 ### M3 — OCR arbitration
 
-Status: **M3.1a eligibility contract complete; M3.2 offline scoring is GO; arbitration remains pending**
+Status: **M3.1a eligibility contract complete; M3.2 offline evaluation complete; simple arbitration is not frozen and M3 remains open**
 
 M3.1a evidence:
 
@@ -280,6 +280,17 @@ M3.1a evidence:
 - derived input and aggregate baseline report are private ignored artifacts; public schemas and synthetic fixtures contain no private manga text, page identifiers, or real region identifiers;
 - normalization is NFKC followed by whitespace removal; exact match and character edit distance use the normalized text, missing candidates remain explicit, and no cross-engine raw confidence is consumed;
 - M3.2 may implement offline comparison against this contract without rerunning a model. This does not authorize or claim a calibrated arbitration policy.
+
+M3.2 outcome:
+
+- the fixed M3.1a benchmark input, its baseline report, and the final M2 routing observations are SHA-256 pinned and joined one-to-one across all 388 reviewed regions;
+- leave-one-page-out evaluation uses 50 page folds, with 49 pages containing OCR-eligible regions; training and held-page evaluation never share a page;
+- the two predeclared adaptive strategies both reached 327 / 384 exact regions (85.16%) and 434 / 5,799 corpus CER (7.48%), compared with Paddle at 289 / 384 exact (75.26%) and 327 / 5,799 CER (5.64%);
+- both adaptive strategies preserved the structural-negative Paddle safety baseline, but neither simultaneously improved fixed-denominator exact and corpus CER over both fixed engines;
+- page-cluster bootstrap with seed 20260811 and 5,000 replicates found an exact-rate gain over Paddle of 9.90 percentage points with a 95% interval of 5.33 to 15.32 points, while the corpus-CER difference was 1.85 points with a 95% interval of -3.92 to 12.52 points and therefore crossed zero;
+- the bubble-aware fallback produced the same aggregate result as the category-only strategy under the predeclared support floor of five; no observation-driven threshold or extra rule was added;
+- one missing Paddle candidate and three normalized-agreement joint errors remain explicit QA residuals;
+- decision: **do not freeze either simple arbitration strategy**. Do not proceed to M4 on the basis of this result and do not add calibration, temporary heuristics, or a new OCR model without a separately authorized M3 follow-up.
 
 Goals:
 

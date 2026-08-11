@@ -386,7 +386,7 @@ export function evaluateOcrBaseline(input: OcrBenchmarkInput, pair: readonly [st
     const engines = new Set<string>();
     for (const candidate of region.candidates) {
       for (const key of Object.keys(candidate)) if (!INPUT_CANDIDATE_FIELDS.has(key)) invalid(`OCR benchmark candidate contains unsupported field ${key}`);
-      if (!SAFE_IDENTIFIER.test(candidate.engine) || candidate.text.length === 0) invalid("OCR benchmark candidate is invalid");
+      if (!SAFE_IDENTIFIER.test(candidate.engine) || typeof candidate.text !== "string" || candidate.text.length === 0) invalid("OCR benchmark candidate is invalid");
       if (engines.has(candidate.engine)) invalid("OCR benchmark region contains duplicate engines");
       engines.add(candidate.engine);
     }

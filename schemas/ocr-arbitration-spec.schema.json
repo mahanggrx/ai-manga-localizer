@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ocr-arbitration-spec.schema.json",
+  "title": "OcrArbitrationEvaluationSpec",
+  "type": "object",
+  "required": ["schemaVersion", "evaluationId", "baseCodeRevision", "sources", "engines", "minimumGroupSupport", "bootstrap"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "evaluationId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+    "baseCodeRevision": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "sources": {
+      "type": "object",
+      "required": ["benchmarkInput", "baselineReport", "routingObservations"],
+      "properties": {
+        "benchmarkInput": { "$ref": "#/$defs/sourcePin" },
+        "baselineReport": { "$ref": "#/$defs/sourcePin" },
+        "routingObservations": { "$ref": "#/$defs/sourcePin" }
+      },
+      "additionalProperties": false
+    },
+    "engines": {
+      "type": "object",
+      "required": ["paddle", "manga"],
+      "properties": {
+        "paddle": { "$ref": "#/$defs/safeIdentifier" },
+        "manga": { "$ref": "#/$defs/safeIdentifier" }
+      },
+      "additionalProperties": false
+    },
+    "minimumGroupSupport": { "type": "integer", "minimum": 1 },
+    "bootstrap": {
+      "type": "object",
+      "required": ["seed", "replicates", "confidenceLevel"],
+      "properties": {
+        "seed": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+        "replicates": { "type": "integer", "minimum": 100, "maximum": 100000 },
+        "confidenceLevel": { "const": 0.95 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "safeIdentifier": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+    "sourcePin": {
+      "type": "object",
+      "required": ["sha256", "byteLength"],
+      "properties": {
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "byteLength": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -15,7 +15,26 @@ export async function loadSchema(name: string): Promise<Schema> {
   return JSON.parse(await readFile(path.join(ROOT, "schemas", safeName), "utf8")) as Schema;
 }
 
-export function validateSchema(value: unknown, schema: Schema, at = "$", errors: string[] = []): string[] {
+function resolveLocalReference(root: Schema, reference: string): Schema | undefined {
+  if (!reference.startsWith("#/")) return undefined;
+  let current: unknown = root;
+  for (const encoded of reference.slice(2).split("/")) {
+    const key = encoded.replace(/~1/g, "/").replace(/~0/g, "~");
+    if (typeof current !== "object" || current === null || Array.isArray(current) || !(key in current)) return undefined;
+    current = (current as Record<string, unknown>)[key];
+  }
+  return typeof current === "object" && current !== null && !Array.isArray(current) ? current as Schema : undefined;
+}
+
+export function validateSchema(value: unknown, schema: Schema, at = "$", errors: string[] = [], root: Schema = schema): string[] {
+  if (typeof schema.$ref === "string") {
+    const resolved = resolveLocalReference(root, schema.$ref);
+    if (!resolved) {
+      errors.push(`${at}: unsupported or unresolved schema reference`);
+      return errors;
+    }
+    return validateSchema(value, resolved, at, errors, root);
+  }
   const expected = schema.type;
   if (expected === "object") {
     if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -27,7 +46,7 @@ export function validateSchema(value: unknown, schema: Schema, at = "$", errors:
     for (const key of required) if (!(key in record)) errors.push(`${at}.${key}: required`);
     const properties = (schema.properties ?? {}) as Record<string, Schema>;
     for (const [key, child] of Object.entries(properties)) {
-      if (key in record) validateSchema(record[key], child, `${at}.${key}`, errors);
+      if (key in record) validateSchema(record[key], child, `${at}.${key}`, errors, root);
     }
     if (schema.additionalProperties === false) {
       for (const key of Object.keys(record)) if (!(key in properties)) errors.push(`${at}.${key}: unexpected property`);
@@ -39,7 +58,7 @@ export function validateSchema(value: unknown, schema: Schema, at = "$", errors:
     }
     if (typeof schema.minItems === "number" && value.length < schema.minItems) errors.push(`${at}: too few items`);
     if (schema.items && typeof schema.items === "object") {
-      value.forEach((item, index) => validateSchema(item, schema.items as Schema, `${at}[${index}]`, errors));
+      value.forEach((item, index) => validateSchema(item, schema.items as Schema, `${at}[${index}]`, errors, root));
     }
   } else if (expected === "string") {
     if (typeof value !== "string") errors.push(`${at}: expected string`);
@@ -66,4 +85,3 @@ export async function assertSchema(name: string, value: unknown): Promise<void> 
   const errors = validateSchema(value, await loadSchema(name));
   if (errors.length > 0) throw new LocalizerError("SCHEMA_VALIDATION_FAILED", `${name}: ${errors.join("; ")}`);
 }
-

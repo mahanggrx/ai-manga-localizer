@@ -158,4 +158,8 @@ test("baseline evaluator rejects text-bearing fields outside the private input c
   const candidateExtra = structuredClone(input) as typeof input & { regions: Array<(typeof input.regions)[number] & { candidates: Array<(typeof input.regions)[number]["candidates"][number] & { confidence?: number }> }> };
   candidateExtra.regions[0].candidates[0].confidence = 0.99;
   assert.throws(() => evaluateOcrBaseline(candidateExtra, ["engine-left", "engine-right"]), /unsupported field/);
+
+  const nonStringCandidate = structuredClone(input) as unknown as { regions: Array<{ candidates: Array<{ text: unknown }> }> };
+  nonStringCandidate.regions[0].candidates[0].text = 42;
+  assert.throws(() => evaluateOcrBaseline(nonStringCandidate as never, ["engine-left", "engine-right"]), /candidate is invalid/);
 });

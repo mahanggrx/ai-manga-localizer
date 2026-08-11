@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "routing-regression-report.schema.json",
+  "title": "RoutingRegressionReport",
+  "type": "object",
+  "required": [
+    "schemaVersion", "benchmarkId", "regionCount", "detectedRegionCount", "distribution",
+    "detectedDistribution", "detectedByCategory", "runtimeRoles", "policies", "bubbleMapping",
+    "deterministicEvidence", "pageSafety", "overlapSeparation", "legacyUnknownReplaceCount",
+    "unknownReplaceViolationCount", "hardCases"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "benchmarkId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+    "regionCount": { "type": "integer", "minimum": 0 },
+    "detectedRegionCount": { "type": "integer", "minimum": 0 },
+    "distribution": {
+      "type": "object",
+      "required": ["ordinaryDialogue", "bubbleExternal", "unknown"],
+      "properties": {
+        "ordinaryDialogue": { "type": "integer", "minimum": 0 },
+        "bubbleExternal": { "type": "integer", "minimum": 0 },
+        "unknown": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "detectedDistribution": {
+      "type": "object",
+      "required": ["ordinaryDialogue", "bubbleExternal", "unknown"],
+      "properties": {
+        "ordinaryDialogue": { "type": "integer", "minimum": 0 },
+        "bubbleExternal": { "type": "integer", "minimum": 0 },
+        "unknown": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "detectedByCategory": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["ordinaryDialogue", "bubbleExternal", "unknown"],
+        "properties": {
+          "ordinaryDialogue": { "type": "integer", "minimum": 0 },
+          "bubbleExternal": { "type": "integer", "minimum": 0 },
+          "unknown": { "type": "integer", "minimum": 0 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "runtimeRoles": {
+      "type": "object",
+      "required": ["dialogue", "caption", "sfx", "unknown"],
+      "properties": {
+        "dialogue": { "type": "integer", "minimum": 0 },
+        "caption": { "type": "integer", "minimum": 0 },
+        "sfx": { "type": "integer", "minimum": 0 },
+        "unknown": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "policies": {
+      "type": "object",
+      "required": ["replace", "preserve-with-annotation"],
+      "properties": {
+        "replace": { "type": "integer", "minimum": 0 },
+        "preserve-with-annotation": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "bubbleMapping": {
+      "type": "object",
+      "required": ["mapped", "total", "rate"],
+      "properties": {
+        "mapped": { "type": "integer", "minimum": 0 },
+        "total": { "type": "integer", "minimum": 0 },
+        "rate": { "type": "number", "minimum": 0, "maximum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "deterministicEvidence": {
+      "type": "object",
+      "required": ["classified", "total", "rate"],
+      "properties": {
+        "classified": { "type": "integer", "minimum": 0 },
+        "total": { "type": "integer", "minimum": 0 },
+        "rate": { "type": "number", "minimum": 0, "maximum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "pageSafety": {
+      "type": "object",
+      "required": ["reviewedPages", "pagesWithDetectedUnknown", "pagesWithNoDetectedRegions", "pagesWithoutUnknownOrEmptyBlock"],
+      "properties": {
+        "reviewedPages": { "type": "integer", "minimum": 0 },
+        "pagesWithDetectedUnknown": { "type": "integer", "minimum": 0 },
+        "pagesWithNoDetectedRegions": { "type": "integer", "minimum": 0 },
+        "pagesWithoutUnknownOrEmptyBlock": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "overlapSeparation": {
+      "type": "object",
+      "properties": {
+        "bubbleExternalMaximum": { "type": "number", "minimum": 0, "maximum": 1 },
+        "ordinaryDialogueMinimum": { "type": "number", "minimum": 0, "maximum": 1 },
+        "ordinaryDialogueDominantMinimum": { "type": "number", "minimum": 0, "maximum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "legacyUnknownReplaceCount": { "type": "integer", "minimum": 0 },
+    "unknownReplaceViolationCount": { "type": "integer", "minimum": 0 },
+    "hardCases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "pageId", "pageOrder", "category", "detected", "tags"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+          "pageId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+          "pageOrder": { "type": "integer", "minimum": 1 },
+          "category": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+          "detected": { "type": "boolean" },
+          "tags": {
+            "type": "array",
+            "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}(:[a-z0-9][a-z0-9-]{0,63})?$" }
+          },
+          "overlapRate": { "type": "number", "minimum": 0, "maximum": 1 },
+          "dominantShare": { "type": "number", "minimum": 0, "maximum": 1 }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

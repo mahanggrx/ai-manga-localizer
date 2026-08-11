@@ -130,7 +130,7 @@ export function extractRegionsFromScene(scene: JsonObject, options: { ocrEngine:
       pageId: item.pageId,
       order,
       role,
-      policy: role === "dialogue" || role === "caption" ? "replace" : "preserve-with-annotation",
+      policy: replacementPolicyForRole(role),
       sourceText,
       ...(translatedText ? { translatedText } : {}),
       ...(item.bbox ? { bbox: item.bbox } : {}),
@@ -206,6 +206,10 @@ export interface RoleDecision {
   role: RegionRecord["role"];
   confidence: number;
   provenance: NonNullable<RegionRecord["roleProvenance"]>;
+}
+
+export function replacementPolicyForRole(role: RegionRecord["role"]): RegionRecord["policy"] {
+  return role === "dialogue" || role === "caption" ? "replace" : "preserve-with-annotation";
 }
 
 export function classifyRole(

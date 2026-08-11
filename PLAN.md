@@ -127,7 +127,7 @@ The detected distribution by page stratum was:
 
 A seven-region private hard-case set now covers one detected bubble-external example from every stratum, the single missed artistic-text region, and one bubble-mapped region on a structural-negative page. It contains stable IDs and numeric evidence only; no image, OCR text, translation, prompt, or blob identifier is recorded.
 
-Current decision: deterministic bubble geometry is sufficient for preservation-first safety on the validated bbox production route, but not for useful coverage by itself because the conservative unknown gate blocks 17 mixed-content pages. It is not sufficient to infer the semantic subtype of bubble-external text, so external text remains unknown and preserved. No classifier should be added until the seven hard cases receive a targeted visual role spot check. The polygon route remains unavailable and is not a reason to schedule detection-only work.
+Current decision: deterministic bubble geometry is sufficient for preservation-first safety on the validated bbox production route, but not for useful coverage by itself because the conservative unknown gate blocks 17 mixed-content pages. The targeted seven-case visual role check found no destructive replacement errors and supported keeping the 0.80/0.05 bbox thresholds unchanged. It also confirmed that bubble-external text contains multiple semantic roles, including replaceable captions or monologue as well as artistic or decorative text that must remain preserved. Geometry alone therefore cannot classify the subtype: external text remains unknown and preserved until separate evidence justifies a classifier. The polygon route remains unavailable and is not a reason to schedule detection-only work.
 
 ## Architecture decisions
 
@@ -231,7 +231,7 @@ Estimated work: one focused implementation and review task.
 
 ### M2 — Existing-data routing regression
 
-Status: **bbox production-route regression and live geometry probe complete; seven-case visual role check remains before M3; `line-polygons` is unavailable and unvalidated**
+Status: **complete; bbox production-route regression, live geometry probe, and seven-case visual role check passed; `line-polygons` remains unavailable and unvalidated**
 
 Use existing KHR and working-gold artifacts without rerunning detection, OCR, or translation models where possible.
 
@@ -255,11 +255,16 @@ Completed M2 evidence:
 - all 387 live text nodes had null `linePolygons`, so all effective geometry was bbox provenance;
 - mapped bbox overlap had a minimum of 0.970428 and external bbox overlap had a maximum of 0;
 - 0.80/0.05 is frozen only for the Koharu 0.61.2 bbox production route;
-- the strict polygon gate is not freeze-eligible when effective non-empty `linePolygons` are absent.
+- the strict polygon gate is not freeze-eligible when effective non-empty `linePolygons` are absent;
+- the seven-case visual role check found no destructive replacement errors and no evidence supporting a bbox threshold change;
+- conservative false preservation remains for some replaceable external captions or monologue, while artistic, decorative, and missed text remains protected;
+- bubble-external semantic classification remains open, but it does not block proceeding to OCR arbitration while the fail-closed preservation policy remains in force.
 
-Remaining completion gate:
+Completion gate:
 
-- visually verify the semantic roles of the seven hard cases, then proceed to M3 without a detection-only run.
+- visually verify the semantic roles of the seven hard cases without a detection-only run: **passed**;
+- verify that no unsafe `unknown -> replace` path or destructive hard-case replacement remains: **passed**;
+- keep unresolved external semantic roles fail-closed and explicitly out of the frozen routing claim: **passed**.
 
 Estimated work: one targeted visual role check.
 

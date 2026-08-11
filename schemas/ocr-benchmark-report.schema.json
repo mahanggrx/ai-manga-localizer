@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ocr-benchmark-report.schema.json",
+  "title": "OcrBenchmarkReport",
+  "type": "object",
+  "required": ["schemaVersion", "benchmarkId", "source", "denominators", "candidates", "pair"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "benchmarkId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+    "source": {
+      "type": "object",
+      "required": ["baseSha256", "overlaySha256", "reviewRevision", "overlayRevision"],
+      "properties": {
+        "baseSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "overlaySha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "reviewRevision": { "type": "integer", "minimum": 1 },
+        "overlayRevision": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "denominators": {
+      "type": "object",
+      "required": ["workingGoldRegions", "detectorOutputRegions", "missedDetectionRegions", "ocrEligibleDetectedRegions", "excludedDetectedRegions", "pairedEligibleRegions"],
+      "properties": {
+        "workingGoldRegions": { "type": "integer", "minimum": 0 },
+        "detectorOutputRegions": { "type": "integer", "minimum": 0 },
+        "missedDetectionRegions": { "type": "integer", "minimum": 0 },
+        "ocrEligibleDetectedRegions": { "type": "integer", "minimum": 0 },
+        "excludedDetectedRegions": { "type": "integer", "minimum": 0 },
+        "pairedEligibleRegions": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "candidates": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["engine", "eligibleRegions", "availableRegions", "missingRegions", "availabilityRate", "normalizedExact", "exactRateAmongAvailable", "exactRateOverEligible", "availableGoldCharacters", "availableEditDistance", "corpusCerAmongAvailable", "coverageAdjustedEditDistance", "eligibleGoldCharacters", "coverageAdjustedCorpusCer"],
+        "properties": {
+          "engine": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+          "eligibleRegions": { "type": "integer", "minimum": 0 },
+          "availableRegions": { "type": "integer", "minimum": 0 },
+          "missingRegions": { "type": "integer", "minimum": 0 },
+          "availabilityRate": { "type": "number", "minimum": 0, "maximum": 1 },
+          "normalizedExact": { "type": "integer", "minimum": 0 },
+          "exactRateAmongAvailable": { "type": "number", "minimum": 0, "maximum": 1 },
+          "exactRateOverEligible": { "type": "number", "minimum": 0, "maximum": 1 },
+          "availableGoldCharacters": { "type": "integer", "minimum": 0 },
+          "availableEditDistance": { "type": "integer", "minimum": 0 },
+          "corpusCerAmongAvailable": { "type": "number", "minimum": 0 },
+          "coverageAdjustedEditDistance": { "type": "integer", "minimum": 0 },
+          "eligibleGoldCharacters": { "type": "integer", "minimum": 0 },
+          "coverageAdjustedCorpusCer": { "type": "number", "minimum": 0 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "pair": {
+      "type": "object",
+      "required": ["leftEngine", "rightEngine", "pairedEligibleRegions", "rawAgreement", "normalizedAgreement", "normalizationOnlyAgreement", "agreementGoldExact", "agreementJointWrong", "leftOnlyExact", "rightOnlyExact", "neitherExact"],
+      "properties": {
+        "leftEngine": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+        "rightEngine": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+        "pairedEligibleRegions": { "type": "integer", "minimum": 0 },
+        "rawAgreement": { "type": "integer", "minimum": 0 },
+        "normalizedAgreement": { "type": "integer", "minimum": 0 },
+        "normalizationOnlyAgreement": { "type": "integer", "minimum": 0 },
+        "agreementGoldExact": { "type": "integer", "minimum": 0 },
+        "agreementJointWrong": { "type": "integer", "minimum": 0 },
+        "leftOnlyExact": { "type": "integer", "minimum": 0 },
+        "rightOnlyExact": { "type": "integer", "minimum": 0 },
+        "neitherExact": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

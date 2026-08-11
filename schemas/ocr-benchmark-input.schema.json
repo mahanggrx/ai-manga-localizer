@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ocr-benchmark-input.schema.json",
+  "title": "OcrBenchmarkInput",
+  "type": "object",
+  "required": ["schemaVersion", "benchmarkId", "source", "regions"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "benchmarkId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+    "source": {
+      "type": "object",
+      "required": ["baseSha256", "overlaySha256", "reviewRevision", "overlayRevision"],
+      "properties": {
+        "baseSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "overlaySha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "reviewRevision": { "type": "integer", "minimum": 1 },
+        "overlayRevision": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "regions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "pageId", "pageOrder", "category", "detectionStatus", "ocrEligibility", "candidates"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+          "pageId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+          "pageOrder": { "type": "integer", "minimum": 1 },
+          "category": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+          "detectionStatus": { "type": "string", "enum": ["detected", "missed"] },
+          "ocrEligibility": { "type": "string", "enum": ["eligible", "excluded"] },
+          "exclusionReason": { "type": "string", "enum": ["detection-missed", "non-text-false-positive", "partial-glyph-bbox", "boundary-clipped"] },
+          "expectedOcr": { "type": "string", "minLength": 1 },
+          "candidates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["engine", "text"],
+              "properties": {
+                "engine": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+                "text": { "type": "string", "minLength": 1 }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

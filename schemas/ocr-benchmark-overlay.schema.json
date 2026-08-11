@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ocr-benchmark-overlay.schema.json",
+  "title": "OcrEligibilityOverlay",
+  "type": "object",
+  "required": ["schemaVersion", "overlayRevision", "benchmarkId", "base", "entries"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "overlayRevision": { "type": "integer", "minimum": 1 },
+    "benchmarkId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+    "base": {
+      "type": "object",
+      "required": ["artifact", "sha256", "byteLength", "reviewRevision"],
+      "properties": {
+        "artifact": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "byteLength": { "type": "integer", "minimum": 1 },
+        "reviewRevision": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["regionId"],
+        "properties": {
+          "regionId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+          "detectionStatus": { "type": "string", "enum": ["detected", "missed"] },
+          "ocrEligibility": { "type": "string", "enum": ["eligible", "excluded"] },
+          "exclusionReason": { "type": "string", "enum": ["detection-missed", "non-text-false-positive", "partial-glyph-bbox", "boundary-clipped"] },
+          "expectedOcr": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

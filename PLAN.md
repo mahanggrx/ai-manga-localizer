@@ -76,10 +76,10 @@ The current deterministic QA detected only 31 of 148 semantic failures. It is us
 
 Raw confidence comparison is not a valid cross-model selector. In the current baseline it selected Manga OCR for every available region even though the engines have different failure profiles.
 
-| OCR engine | Exact-region rate | Corpus CER |
-| --- | ---: | ---: |
-| PaddleOCR-VL 1.6 | 75.13% | 5.22% |
-| Manga OCR | 80.62% | 21.54% |
+| OCR engine | Available / eligible | Exact among available | Corpus CER among available | Coverage-adjusted CER |
+| --- | ---: | ---: | ---: | ---: |
+| PaddleOCR-VL 1.6 | 383 / 384 | 289 / 383 (75.46%) | 300 / 5,772 (5.20%) | 327 / 5,799 (5.64%) |
+| Manga OCR | 384 / 384 | 311 / 384 (80.99%) | 1,241 / 5,799 (21.40%) | 1,241 / 5,799 (21.40%) |
 
 Manga OCR performs well on many ordinary, dense, and stylized regions but has severe long-tail errors on dark-complex and structural-negative pages. PaddleOCR-VL is more robust on those page classes. The evidence supports a calibrated or type-aware selector, not a single universal engine and not direct raw-confidence comparison.
 
@@ -270,7 +270,16 @@ Estimated work: one targeted visual role check.
 
 ### M3 — OCR arbitration
 
-Status: **pending**
+Status: **M3.1a eligibility contract complete; M3.2 offline scoring is GO; arbitration remains pending**
+
+M3.1a evidence:
+
+- `review-v5` remains unchanged; the five accepted visual-audit decisions are represented only by an ignored, versioned private overlay pinned to the exact base hash and byte length;
+- the fixed benchmark population is 388 working-gold regions: 387 detector outputs and one detection miss;
+- OCR scoring contains 384 eligible detected regions, excludes three detected structural or boundary cases, and has 383 regions with both retained candidates;
+- derived input and aggregate baseline report are private ignored artifacts; public schemas and synthetic fixtures contain no private manga text, page identifiers, or real region identifiers;
+- normalization is NFKC followed by whitespace removal; exact match and character edit distance use the normalized text, missing candidates remain explicit, and no cross-engine raw confidence is consumed;
+- M3.2 may implement offline comparison against this contract without rerunning a model. This does not authorize or claim a calibrated arbitration policy.
 
 Goals:
 

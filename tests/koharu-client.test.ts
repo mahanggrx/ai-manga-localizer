@@ -99,13 +99,19 @@ test("HTTP errors omit potentially sensitive response bodies", async () => {
 
 test("startup and epoch conflicts fail closed with stable error codes", async () => {
   for (const [status, code] of [[503, "KOHARU_BOOTSTRAPPING"], [409, "KOHARU_EPOCH_CONFLICT"]] as const) {
-    const client = new KoharuClient(DEFAULT_CONFIG.koharu, { fetchImpl: async () => new Response("private scene detail", { status }) });
+    let bodyCancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new TextEncoder().encode("private scene detail")); },
+      cancel() { bodyCancelled = true; },
+    });
+    const client = new KoharuClient(DEFAULT_CONFIG.koharu, { fetchImpl: async () => new Response(body, { status }) });
     await assert.rejects(() => client.getMeta(), (error: unknown) => {
       assert.ok(error instanceof Error);
       assert.equal((error as Error & { code?: string }).code, code);
       assert.doesNotMatch(error.message, /private scene detail/);
       return true;
     });
+    assert.equal(bodyCancelled, true);
   }
 });
 
@@ -147,4 +153,73 @@ test("LLM load uses the Koharu 0.61.2 target envelope", async () => {
     target: { kind: "local", modelId: "sakura-galtransl-7b-v3.7" },
     options: { temperature: 0.3, maxTokens: 8192 },
   });
+});
+
+test("blob reads accept only valid hashes from loopback and enforce the byte limit", async () => {
+  const hash = "a".repeat(64);
+  let requestedPath = "";
+  const client = new KoharuClient(DEFAULT_CONFIG.koharu, {
+    blobMaxBytes: 4,
+    fetchImpl: async (input, init) => {
+      requestedPath = new URL(String(input)).pathname;
+      assert.equal(init?.redirect, "error");
+      return new Response(new Uint8Array([1, 2, 3, 4]));
+    },
+  });
+  assert.deepEqual(await client.readBlob(hash), new Uint8Array([1, 2, 3, 4]));
+  assert.match(requestedPath, new RegExp(`/blobs/${hash}$`));
+  await assert.rejects(() => client.readBlob("../private"), (error: unknown) => (error as { code?: string }).code === "KOHARU_BLOB_HASH_INVALID");
+
+  const oversized = new KoharuClient(DEFAULT_CONFIG.koharu, {
+    blobMaxBytes: 4,
+    fetchImpl: async () => new Response(new Uint8Array([1, 2, 3, 4, 5])),
+  });
+  await assert.rejects(() => oversized.readBlob(hash), (error: unknown) => (error as { code?: string }).code === "KOHARU_BLOB_TOO_LARGE");
+
+  let bootstrapBodyCancelled = false;
+  const bootstrapBody = new ReadableStream<Uint8Array>({
+    start(controller) { controller.enqueue(new TextEncoder().encode("private boot detail")); },
+    cancel() { bootstrapBodyCancelled = true; },
+  });
+  const bootstrapping = new KoharuClient(DEFAULT_CONFIG.koharu, {
+    fetchImpl: async () => new Response(bootstrapBody, { status: 503 }),
+  });
+  await assert.rejects(() => bootstrapping.readBlob(hash), (error: unknown) => (error as { code?: string }).code === "KOHARU_BOOTSTRAPPING");
+  assert.equal(bootstrapBodyCancelled, true);
+
+  const remote = new KoharuClient({ ...DEFAULT_CONFIG.koharu, baseUrl: "https://koharu.example/api/v1", allowRemote: true }, {
+    fetchImpl: async () => assert.fail("remote blob reads must fail before fetch"),
+  });
+  await assert.rejects(() => remote.readBlob(hash), (error: unknown) => (error as { code?: string }).code === "KOHARU_BLOB_REMOTE_FORBIDDEN");
+});
+
+test("blob reads time out without logging hashes, response bodies, or image details", async () => {
+  const hash = "b".repeat(64);
+  const logCalls: unknown[] = [];
+  const logger = {
+    info: (...args: unknown[]) => logCalls.push(args),
+    warn: (...args: unknown[]) => logCalls.push(args),
+    error: (...args: unknown[]) => logCalls.push(args),
+  };
+  const timeoutClient = new KoharuClient(DEFAULT_CONFIG.koharu, {
+    blobTimeoutMs: 10,
+    logger,
+    fetchImpl: async (_input, init) => await new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+    }),
+  });
+  await assert.rejects(() => timeoutClient.readBlob(hash), (error: unknown) => (error as { code?: string }).code === "KOHARU_BLOB_TIMEOUT");
+
+  const privateBody = "OCR text, blob hash, and private image dimensions must not escape";
+  const errorClient = new KoharuClient(DEFAULT_CONFIG.koharu, {
+    logger,
+    fetchImpl: async () => new Response(privateBody, { status: 500 }),
+  });
+  await assert.rejects(() => errorClient.readBlob(hash), (error: unknown) => {
+    const message = String(error);
+    assert.doesNotMatch(message, /OCR text|private image|dimensions/);
+    assert.doesNotMatch(message, new RegExp(hash));
+    return true;
+  });
+  assert.deepEqual(logCalls, []);
 });

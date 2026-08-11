@@ -1,6 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { createCbzBuffer, detectMediaType, loadInputImages, readZipImagesBuffer } from "./archive.ts";
+import { buildBubbleMaskEvidence, type BubbleMaskEvidence } from "./bubble-mask.ts";
 import { asLocalizerError, LocalizerError } from "./errors.ts";
 import { createUniqueDirectory, safeSlug, writeExclusive, writeJsonExclusive } from "./file-utils.ts";
 import { KoharuClient, selectEngine, selectedPipelineEngine } from "./koharu-client.ts";
@@ -228,6 +229,7 @@ export async function runTranslate(config: LocalizerConfig, options: TranslateOp
   let projectCreated = false;
   let regions: RegionRecord[] = [];
   let scenePageIds: string[] = [];
+  let bubbleEvidence: BubbleMaskEvidence | undefined;
   try {
     const { meta, engines } = await executeStage(report, checkpoints, "connect-koharu", async () => {
       const meta = await client.getMeta();
@@ -256,7 +258,8 @@ export async function runTranslate(config: LocalizerConfig, options: TranslateOp
     regions = await executeStage(report, checkpoints, "inspect-primary-ocr", async () => {
       const scene = await client.getScene();
       scenePageIds = extractPageIds(scene);
-      const extracted = extractRegionsFromScene(scene, { ocrEngine: pipeline.primaryOcr, translationModel: config.translation.localTarget.modelId, quality: config.quality });
+      bubbleEvidence = await buildBubbleMaskEvidence(scene, (hash) => client.readBlob(hash));
+      const extracted = extractRegionsFromScene(scene, { ocrEngine: pipeline.primaryOcr, translationModel: config.translation.localTarget.modelId, quality: config.quality, bubbleEvidence });
       if (extracted.length === 0) throw new LocalizerError("SCENE_TEXT_NOT_FOUND", "Koharu scene contains no recognizable source-text regions; the scene schema may be incompatible", { recoverable: true });
       return extracted;
     });
@@ -268,7 +271,7 @@ export async function runTranslate(config: LocalizerConfig, options: TranslateOp
         const run = await client.runPipeline({ steps: [pipeline.fallbackOcr!], pages: fallbackPages });
         item.warnings.push(...run.warnings.map(() => "KOHARU_PIPELINE_WARNING"));
       });
-      const fallback = extractRegionsFromScene(await client.getScene(), { ocrEngine: pipeline.fallbackOcr, translationModel: config.translation.localTarget.modelId, quality: config.quality });
+      const fallback = extractRegionsFromScene(await client.getScene(), { ocrEngine: pipeline.fallbackOcr, translationModel: config.translation.localTarget.modelId, quality: config.quality, bubbleEvidence });
       regions = mergeOcrPass(before, fallback, pipeline.fallbackOcr);
     }
 
@@ -293,7 +296,7 @@ export async function runTranslate(config: LocalizerConfig, options: TranslateOp
         });
         item.warnings.push(...run.warnings.map(() => "KOHARU_PIPELINE_WARNING"));
       });
-      regions = applyChapterQa(carryOcrProvenance(regions, extractRegionsFromScene(await client.getScene(), { ocrEngine: pipeline.primaryOcr, translationModel: config.translation.localTarget.modelId, quality: config.quality })), config.quality);
+      regions = applyChapterQa(carryOcrProvenance(regions, extractRegionsFromScene(await client.getScene(), { ocrEngine: pipeline.primaryOcr, translationModel: config.translation.localTarget.modelId, quality: config.quality, bubbleEvidence })), config.quality);
     }
 
     let retryPages = translationRetryPages(regions);
@@ -308,7 +311,7 @@ export async function runTranslate(config: LocalizerConfig, options: TranslateOp
         });
         item.warnings.push(...run.warnings.map(() => "KOHARU_PIPELINE_WARNING"));
       });
-      regions = applyChapterQa(carryOcrProvenance(beforeRetry, extractRegionsFromScene(await client.getScene(), { ocrEngine: pipeline.primaryOcr, translationModel: config.translation.localTarget.modelId, quality: config.quality })), config.quality);
+      regions = applyChapterQa(carryOcrProvenance(beforeRetry, extractRegionsFromScene(await client.getScene(), { ocrEngine: pipeline.primaryOcr, translationModel: config.translation.localTarget.modelId, quality: config.quality, bubbleEvidence })), config.quality);
       retryPages = translationRetryPages(regions);
     }
 
@@ -332,7 +335,7 @@ export async function runTranslate(config: LocalizerConfig, options: TranslateOp
           item.warnings.push(...run.warnings.map(() => "KOHARU_PIPELINE_WARNING"));
         });
         const cloudSet = new Set(cloudPages);
-        regions = markCloudRoute(applyChapterQa(carryOcrProvenance(regions, extractRegionsFromScene(await client.getScene(), { ocrEngine: pipeline.primaryOcr, translationModel: config.translation.cloudTarget.modelId, quality: config.quality })), config.quality), cloudSet, config.translation.cloudTarget.modelId);
+        regions = markCloudRoute(applyChapterQa(carryOcrProvenance(regions, extractRegionsFromScene(await client.getScene(), { ocrEngine: pipeline.primaryOcr, translationModel: config.translation.cloudTarget.modelId, quality: config.quality, bubbleEvidence })), config.quality), cloudSet, config.translation.cloudTarget.modelId);
         report.cloudRegions = regions.filter((region) => cloudSet.has(region.pageId)).map((region) => region.id);
       }
     }

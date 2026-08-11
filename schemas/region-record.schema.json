@@ -23,6 +23,9 @@
       "additionalProperties": false
     },
     "insideBubble": { "type": "boolean" },
+    "bubbleInstanceId": { "type": "string", "minLength": 1 },
+    "roleConfidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "roleProvenance": { "type": "string", "enum": ["native", "bubble-mask", "insufficient-evidence"] },
     "ocrConfidence": { "type": "number", "minimum": 0, "maximum": 1 },
     "ocrCandidates": {
       "type": "array",

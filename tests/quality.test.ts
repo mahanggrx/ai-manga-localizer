@@ -99,10 +99,11 @@ test("quality rules detect refusal, kana leakage, missing tokens, and low OCR", 
   assert.equal(looksLikeRefusal("抱歉，我无法翻译"), true);
 });
 
-test("SFX policy and deterministic glossary are stable", () => {
-  assert.equal(classifyRole("ドン", "unknown", false, 8), "sfx");
-  assert.equal(classifyRole("ドン", "unknown", undefined, 8), "sfx");
-  assert.equal(classifyRole("長い説明文です", "unknown", false, 8), "unknown");
+test("roles require native evidence or a high-confidence bubble mask", () => {
+  assert.deepEqual(classifyRole("sfx"), { role: "sfx", confidence: 1, provenance: "native" });
+  assert.deepEqual(classifyRole(undefined, { insideBubble: true, confidence: 0.95, provenance: "bubble-mask" }), { role: "dialogue", confidence: 0.95, provenance: "bubble-mask" });
+  assert.deepEqual(classifyRole(undefined, { insideBubble: true, confidence: 0.5, provenance: "bubble-mask" }), { role: "unknown", confidence: 0, provenance: "insufficient-evidence" });
+  assert.deepEqual(classifyRole(undefined, { insideBubble: false, confidence: 1, provenance: "bubble-mask" }), { role: "unknown", confidence: 0, provenance: "insufficient-evidence" });
   const make = (id: string): RegionRecord => ({
     schemaVersion: 1, id, pageId: "p1", order: Number(id.slice(1)), role: "dialogue", policy: "replace",
     sourceText: "山田", translatedText: "山田", ocrCandidates: [], translationCandidates: [], qaFlags: [],

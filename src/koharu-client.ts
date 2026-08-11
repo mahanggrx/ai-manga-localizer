@@ -6,6 +6,17 @@ import type { InputImage, JsonObject, JsonValue, KoharuMeta, LlmTarget, Localize
 
 type FetchLike = typeof fetch;
 
+export const KOHARU_BLOB_MAX_BYTES = 32 * 1024 * 1024;
+export const KOHARU_BLOB_TIMEOUT_MS = 10_000;
+const KOHARU_BLOB_MAX_CHUNKS = 4_096;
+
+interface KoharuClientOptions {
+  fetchImpl?: FetchLike;
+  logger?: SafeLogger;
+  blobMaxBytes?: number;
+  blobTimeoutMs?: number;
+}
+
 function isLoopback(hostname: string): boolean {
   const normalized = hostname.replace(/^\[|\]$/g, "").toLowerCase();
   return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
@@ -55,8 +66,10 @@ export class KoharuClient {
   private readonly operationTimeoutMs: number;
   private readonly fetchImpl: FetchLike;
   private readonly logger?: SafeLogger;
+  private readonly blobMaxBytes: number;
+  private readonly blobTimeoutMs: number;
 
-  constructor(config: LocalizerConfig["koharu"], options?: { fetchImpl?: FetchLike; logger?: SafeLogger }) {
+  constructor(config: LocalizerConfig["koharu"], options?: KoharuClientOptions) {
     this.baseUrl = new URL(config.baseUrl.endsWith("/") ? config.baseUrl : `${config.baseUrl}/`);
     if (!["http:", "https:"].includes(this.baseUrl.protocol)) throw new LocalizerError("KOHARU_URL_PROTOCOL", "Koharu URL must use HTTP or HTTPS");
     if (!config.allowRemote && !isLoopback(this.baseUrl.hostname)) throw new LocalizerError("KOHARU_REMOTE_FORBIDDEN", "Remote Koharu URLs require koharu.allowRemote=true");
@@ -65,6 +78,10 @@ export class KoharuClient {
     this.operationTimeoutMs = config.operationTimeoutMs;
     this.fetchImpl = options?.fetchImpl ?? fetch;
     this.logger = options?.logger;
+    this.blobMaxBytes = options?.blobMaxBytes ?? KOHARU_BLOB_MAX_BYTES;
+    this.blobTimeoutMs = options?.blobTimeoutMs ?? Math.min(config.requestTimeoutMs, KOHARU_BLOB_TIMEOUT_MS);
+    if (!Number.isSafeInteger(this.blobMaxBytes) || this.blobMaxBytes < 1) throw new LocalizerError("KOHARU_BLOB_LIMIT_INVALID", "Koharu blob byte limit must be a positive safe integer");
+    if (!Number.isSafeInteger(this.blobTimeoutMs) || this.blobTimeoutMs < 1) throw new LocalizerError("KOHARU_BLOB_TIMEOUT_INVALID", "Koharu blob timeout must be a positive safe integer");
   }
 
   private async request(path: string, init: RequestInit = {}, timeoutMs = this.requestTimeoutMs): Promise<Response> {
@@ -72,7 +89,10 @@ export class KoharuClient {
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await this.fetchImpl(new URL(path, this.baseUrl), { ...init, signal: controller.signal });
-      if (response.status === 503) throw new LocalizerError("KOHARU_BOOTSTRAPPING", "Koharu is still bootstrapping", { status: 503, recoverable: true });
+      if (response.status === 503) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new LocalizerError("KOHARU_BOOTSTRAPPING", "Koharu is still bootstrapping", { status: 503, recoverable: true });
+      }
       if (response.status === 409) {
         await response.body?.cancel().catch(() => undefined);
         throw new LocalizerError("KOHARU_EPOCH_CONFLICT", "Koharu rejected the operation because the scene epoch changed; response body omitted for content privacy", { status: 409, recoverable: true });
@@ -108,6 +128,75 @@ export class KoharuClient {
   async getConfig(): Promise<JsonObject> { return await this.json<JsonObject>("config"); }
   async getScene(): Promise<JsonObject> { return await this.json<JsonObject>("scene.json"); }
   async getOperations(): Promise<JsonValue> { return await this.json<JsonValue>("operations"); }
+
+  async readBlob(hash: string): Promise<Uint8Array> {
+    if (!/^[0-9a-f]{64}$/.test(hash)) throw new LocalizerError("KOHARU_BLOB_HASH_INVALID", "Koharu blob hash is invalid");
+    if (!isLoopback(this.baseUrl.hostname)) throw new LocalizerError("KOHARU_BLOB_REMOTE_FORBIDDEN", "Koharu blob reads are restricted to loopback hosts");
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.blobTimeoutMs);
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    try {
+      const response = await this.fetchImpl(new URL(`blobs/${hash}`, this.baseUrl), {
+        headers: { accept: "application/octet-stream,image/webp" },
+        redirect: "error",
+        signal: controller.signal,
+      });
+      if (response.status === 503) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new LocalizerError("KOHARU_BOOTSTRAPPING", "Koharu is still bootstrapping", { status: 503, recoverable: true });
+      }
+      if (response.status === 409) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new LocalizerError("KOHARU_EPOCH_CONFLICT", "Koharu rejected the blob read because the scene epoch changed; response body omitted for content privacy", { status: 409, recoverable: true });
+      }
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new LocalizerError("KOHARU_BLOB_HTTP_ERROR", `Koharu blob endpoint returned HTTP ${response.status}; response body omitted for content privacy`, { status: response.status, recoverable: response.status >= 500 });
+      }
+      const contentLength = response.headers.get("content-length");
+      if (contentLength !== null) {
+        const declaredBytes = Number(contentLength);
+        if (!Number.isSafeInteger(declaredBytes) || declaredBytes < 0 || declaredBytes > this.blobMaxBytes) {
+          await response.body?.cancel().catch(() => undefined);
+          throw new LocalizerError("KOHARU_BLOB_TOO_LARGE", "Koharu blob exceeds the response byte limit");
+        }
+      }
+      if (!response.body) throw new LocalizerError("KOHARU_BLOB_EMPTY", "Koharu blob response has no body");
+      reader = response.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let totalBytes = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        totalBytes += value.byteLength;
+        if (totalBytes > this.blobMaxBytes) {
+          await reader.cancel().catch(() => undefined);
+          throw new LocalizerError("KOHARU_BLOB_TOO_LARGE", "Koharu blob exceeds the response byte limit");
+        }
+        if (chunks.length >= KOHARU_BLOB_MAX_CHUNKS) {
+          await reader.cancel().catch(() => undefined);
+          throw new LocalizerError("KOHARU_BLOB_STREAM_INVALID", "Koharu blob response contains too many chunks");
+        }
+        chunks.push(value);
+      }
+      if (totalBytes === 0) throw new LocalizerError("KOHARU_BLOB_EMPTY", "Koharu blob response is empty");
+      const bytes = new Uint8Array(totalBytes);
+      let offset = 0;
+      for (const chunk of chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return bytes;
+    } catch (error) {
+      if (error instanceof LocalizerError) throw error;
+      if ((error as Error).name === "AbortError") throw new LocalizerError("KOHARU_BLOB_TIMEOUT", "Koharu blob read timed out", { recoverable: true });
+      throw new LocalizerError("KOHARU_BLOB_UNREACHABLE", `Cannot read a blob from Koharu at ${this.baseUrl.origin}`, { recoverable: true });
+    } finally {
+      clearTimeout(timer);
+      reader?.releaseLock();
+      controller.abort();
+    }
+  }
 
   async createProject(name: string): Promise<JsonObject> {
     return await this.json<JsonObject>("projects", {

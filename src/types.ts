@@ -48,6 +48,9 @@ export interface RegionRecord {
   translatedText?: string;
   bbox?: BoundingBox;
   insideBubble?: boolean;
+  bubbleInstanceId?: string;
+  roleConfidence?: number;
+  roleProvenance?: "native" | "bubble-mask" | "insufficient-evidence";
   ocrConfidence?: number;
   ocrCandidates: OcrCandidate[];
   translationCandidates: TranslationCandidate[];

@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
+import { bubbleEvidenceKey } from "./bubble-mask.ts";
 import { LocalizerError } from "./errors.ts";
+import type { BubbleMaskEvidence } from "./bubble-mask.ts";
 import type { BoundingBox, JsonObject, JsonValue, LocalizerConfig, QaFlag, RegionRecord } from "./types.ts";
 
 interface PartialRegion {
@@ -59,7 +61,7 @@ function roleFromLabel(label: string, direct?: string): RegionRecord["role"] | u
   return undefined;
 }
 
-export function extractRegionsFromScene(scene: JsonObject, options: { ocrEngine: string; translationModel: string; quality: LocalizerConfig["quality"] }): RegionRecord[] {
+export function extractRegionsFromScene(scene: JsonObject, options: { ocrEngine: string; translationModel: string; quality: LocalizerConfig["quality"]; bubbleEvidence?: BubbleMaskEvidence }): RegionRecord[] {
   const grouped = new Map<string, PartialRegion>();
   let sequence = 0;
 
@@ -114,19 +116,28 @@ export function extractRegionsFromScene(scene: JsonObject, options: { ocrEngine:
   return partial.sort((a, b) => a.order - b.order).map((item, order) => {
     const sourceText = item.sourceText!.trim();
     const translatedText = item.translatedText?.trim();
-    const explicitRole = item.role ?? "unknown";
-    const role = classifyRole(sourceText, explicitRole, item.insideBubble, options.quality.sfxMaxCharacters);
+    const bubbleEvidence = options.bubbleEvidence?.get(bubbleEvidenceKey(item.pageId, item.id));
+    const insideBubble = bubbleEvidence?.insideBubble ?? item.insideBubble;
+    const roleDecision = classifyRole(item.role, bubbleEvidence
+      ? { insideBubble, confidence: bubbleEvidence.confidence, provenance: "bubble-mask" }
+      : item.insideBubble !== undefined
+        ? { insideBubble, confidence: 1, provenance: "native" }
+        : undefined);
+    const role = roleDecision.role;
     const region: RegionRecord = {
       schemaVersion: 1,
       id: item.id,
       pageId: item.pageId,
       order,
       role,
-      policy: role === "sfx" ? "preserve-with-annotation" : "replace",
+      policy: role === "dialogue" || role === "caption" ? "replace" : "preserve-with-annotation",
       sourceText,
       ...(translatedText ? { translatedText } : {}),
       ...(item.bbox ? { bbox: item.bbox } : {}),
-      ...(item.insideBubble !== undefined ? { insideBubble: item.insideBubble } : {}),
+      ...(insideBubble !== undefined ? { insideBubble } : {}),
+      ...(bubbleEvidence?.bubbleInstanceId ? { bubbleInstanceId: bubbleEvidence.bubbleInstanceId } : {}),
+      roleConfidence: roleDecision.confidence,
+      roleProvenance: roleDecision.provenance,
       ...(item.confidence !== undefined ? { ocrConfidence: item.confidence } : {}),
       ocrCandidates: [{ engine: options.ocrEngine, text: sourceText, confidence: item.confidence, selected: true, selectionReason: "primary-engine-output" }],
       translationCandidates: translatedText ? [{ model: options.translationModel, text: translatedText, selected: true, selectionReason: "latest-local-pipeline-output", route: "local" }] : [],
@@ -191,13 +202,23 @@ export function chunkPageIds(pageIds: string[], chunkPages: number, contextOverl
   return chunks;
 }
 
-export function classifyRole(sourceText: string, explicitRole: RegionRecord["role"], insideBubble: boolean | undefined, sfxMaxCharacters: number): RegionRecord["role"] {
-  if (explicitRole !== "unknown") return explicitRole;
-  if (insideBubble === true) return "dialogue";
-  const compact = sourceText.replace(/\s/g, "");
-  const katakana = compact.match(/[\u30a0-\u30ff\uff66-\uff9f]/g)?.length ?? 0;
-  if (compact.length <= sfxMaxCharacters && compact.length > 0 && katakana / compact.length >= 0.5) return "sfx";
-  return "unknown";
+export interface RoleDecision {
+  role: RegionRecord["role"];
+  confidence: number;
+  provenance: NonNullable<RegionRecord["roleProvenance"]>;
+}
+
+export function classifyRole(
+  nativeRole: RegionRecord["role"] | undefined,
+  evidence?: { insideBubble?: boolean; confidence: number; provenance: "native" | "bubble-mask" },
+): RoleDecision {
+  if (nativeRole && (["dialogue", "caption", "sfx"] as const).includes(nativeRole as "dialogue" | "caption" | "sfx")) {
+    return { role: nativeRole, confidence: 1, provenance: "native" };
+  }
+  if (evidence?.insideBubble === true && evidence.confidence >= 0.8) {
+    return { role: "dialogue", confidence: evidence.confidence, provenance: evidence.provenance };
+  }
+  return { role: "unknown", confidence: 0, provenance: "insufficient-evidence" };
 }
 
 export function containsJapaneseKana(text: string): boolean {
@@ -348,10 +369,11 @@ export function renderProtectionPlan(
     const codes: string[] = [];
     if (strictPages.has(pageId)) codes.push("BLOCKING_REGION_QA");
     if (config.preserveEmptyPages && pageRegions.length === 0) codes.push("NO_TEXT_REGIONS_DETECTED");
+    if (pageRegions.some((region) => region.role === "unknown")) codes.push("UNCLASSIFIED_TEXT_REGION");
     if (
       config.preserveArtisticOnlyPages
       && pageRegions.length > 0
-      && pageRegions.every((region) => region.policy === "preserve-with-annotation")
+      && pageRegions.every((region) => region.role === "sfx" && region.policy === "preserve-with-annotation")
     ) {
       codes.push("ARTISTIC_TEXT_ONLY_PAGE");
     }

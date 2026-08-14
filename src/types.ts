@@ -3,6 +3,8 @@ export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
 export type JsonObject = { [key: string]: JsonValue };
 
 export type QaSeverity = "info" | "warning" | "error";
+export type OcrRuntimePolicyName = "strict-quality" | "low-manual";
+export type KoharuAccessMode = "external" | "owned";
 
 export interface BoundingBox {
   x: number;
@@ -24,7 +26,9 @@ export interface QaFlag {
 
 export interface OcrCandidate {
   engine: string;
-  text: string;
+  role: "paddle" | "manga";
+  status: "present" | "missing" | "not-run";
+  text?: string;
   confidence?: number;
   selected: boolean;
   selectionReason: string;
@@ -40,7 +44,7 @@ export interface TranslationCandidate {
 }
 
 export interface RegionRecord {
-  schemaVersion: 1;
+  schemaVersion: 2;
   id: string;
   pageId: string;
   order: number;
@@ -54,8 +58,11 @@ export interface RegionRecord {
   geometrySource?: BubbleGeometrySource;
   roleConfidence?: number;
   roleProvenance?: "native" | "bubble-mask" | "insufficient-evidence";
-  ocrConfidence?: number;
   ocrCandidates: OcrCandidate[];
+  ocrRuntimePolicy?: { name: OcrRuntimePolicyName; version: 1 };
+  selectedOcrEngine?: string;
+  ocrSelectionReason?: "raw-agreement" | "normalized-agreement" | "low-manual-paddle-precedence" | "qa-blocked";
+  ocrQaReasons?: string[];
   translationCandidates: TranslationCandidate[];
   qaFlags: QaFlag[];
 }
@@ -141,14 +148,25 @@ export interface LlmTarget {
 export interface LocalizerConfig {
   schemaVersion: 1;
   koharu: {
+    mode: KoharuAccessMode;
     baseUrl: string;
     requiredVersion: string;
     requestTimeoutMs: number;
     operationTimeoutMs: number;
     allowRemote: boolean;
+    ownedProcess?: {
+      executablePath: string;
+      host: "127.0.0.1" | "::1";
+      port: number;
+      allowedRunRoot: string;
+      shadowCacheRoot: string;
+      shadowCacheManifest: string;
+      appDataModelRoots: string[];
+    };
   };
   quality: {
     profile: "quality-local";
+    ocrRuntimePolicy: { name: OcrRuntimePolicyName; version: 1 };
     primaryOcrHints: string[];
     fallbackOcrHints: string[];
     primaryInpainterHints: string[];
@@ -200,9 +218,35 @@ export interface KoharuMeta {
 export interface PipelineRunRequest {
   steps: string[];
   pages?: string[];
+  textNodeIds?: string[];
   targetLanguage?: string;
   systemPrompt?: string;
   defaultFont?: string;
+}
+
+export interface KoharuSceneSnapshot {
+  epoch: number;
+  scene: JsonObject;
+}
+
+export interface KoharuProjectIdentity {
+  id: string;
+  name?: string;
+  path?: string;
+}
+
+export interface KoharuProjectsSnapshot {
+  projects: KoharuProjectIdentity[];
+}
+
+export interface KoharuOperationSnapshot {
+  operations: JsonValue[];
+}
+
+export interface KoharuSourceTextPatch {
+  pageId: string;
+  nodeId: string;
+  sourceText: string;
 }
 
 export interface BenchmarkMetrics {

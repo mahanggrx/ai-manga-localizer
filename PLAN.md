@@ -270,7 +270,7 @@ Estimated work: one targeted visual role check.
 
 ### M3 — OCR arbitration
 
-Status: **M3.1a eligibility contract complete; M3.2 offline evaluation complete; simple arbitration is not frozen and M3 remains open**
+Status: **M3.8 category-free runtime policy and owned-process single-writer closure implemented in code and synthetic contracts; one real three-page Koharu smoke remains unexecuted**
 
 M3.1a evidence:
 
@@ -292,16 +292,41 @@ M3.2 outcome:
 - one missing Paddle candidate and three normalized-agreement joint errors remain explicit QA residuals;
 - decision: **do not freeze either simple arbitration strategy**. Do not proceed to M4 on the basis of this result and do not add calibration, temporary heuristics, or a new OCR model without a separately authorized M3 follow-up.
 
+M3.5–M3.7 decisions:
+
+- M3.5 gate: **INCONCLUSIVE**. It does not establish a production selector.
+- M3.6 P2 is a **post-hoc development result only**. It is not prospective gate evidence and is not promoted into the runtime contract.
+- M3.7 decision: **FALL_BACK_TO_CATEGORY_FREE_POLICY**.
+- Benchmark category, bubble relation, repetition signals, and other post-hoc strata do not enter V1 runtime selection.
+- Raw confidence remains per-engine provenance only and is never compared between Paddle OCR and Manga OCR.
+
+M3.8 runtime contract:
+
+- OCR runtime policy version 1 is independent from the benchmark scorer and shares one NFKC-plus-Unicode-whitespace-removal and hard-safety implementation with benchmark evaluation.
+- `strict-quality` requires both engines for every eligible region. Safe normalized agreement is accepted; disagreement, missing candidates, fallback not-run, or any hard-unsafe candidate enters blocking QA. This is the `quality-local` default and maximizes safety at the cost of more manual review.
+- `low-manual` accepts safe agreement and deterministically selects Paddle on safe disagreement. Missing candidates, fallback not-run, or any hard-unsafe candidate still enters blocking QA. This reduces disagreement review at the cost of allowing a known deterministic override.
+- Both policies are category-free. Neither uses category, bubble state, repetition gates, nor cross-engine raw confidence.
+- Runtime association fails closed on duplicate identities, population drift, page conflicts, extra or missing fallback regions, and source-geometry conflicts.
+- Region records carry both candidate states, candidate-local confidence provenance, selected engine when present, policy version, fixed selection reason, and fixed QA reason codes.
+- Koharu 0.61.2 accepts an `Op::Batch` directly at `/history/apply` and returns the resulting epoch, but it has no expected-epoch input and a Batch applies child operations sequentially without rollback. The runtime guarantee is therefore explicitly a **single-writer operational guarantee, not atomic CAS**.
+- Scene mutation and translator execution require an orchestrator-started loopback Koharu process, a verified child handle/PID/start time/executable hash/socket owner, a unique run-owned data root, and exactly one run-created project. External/shared Koharu mode remains read-only and stops with `KOHARU_SAFE_SOURCE_TEXT_WRITEBACK_UNAVAILABLE` before project creation, upload, scene mutation, or translator execution.
+- Before patching, the runtime waits for idle operations and two identical scene reads, freezes epoch plus full and allowed-field-masked structure hashes, writes a private durable intent journal, and sends one non-empty Batch containing only necessary source-text updates. Every response, timeout, or ambiguous error is followed by readback rather than retry. Only exact equality with the precomputed patched scene at `E0 + 1` advances the journal; partial application, an extra epoch, population or active-project drift, or any unknown-field change quarantines the isolated project.
+- Translator start requires a second exact epoch/hash precondition check and sends only the selected text-node IDs and their target pages. `CompletedWithErrors` is failure. The verified postcondition requires one epoch increment per actual target page, unchanged selected source text, unchanged population/geometry/mask/blob and unknown fields, and changes only to target translation fields. Two stable reads and one final pre-render hash check are required before inpaint or render.
+- The first owned V1 closure performs one journaled translator pipeline. Existing local/cloud retry mutations are not silently reused because they would require separately journaled epoch and postcondition gates; retry-eligible pages remain explicit QA/render-preservation outcomes until that extension is designed.
+- The private journal records `PREPARED`, `PATCH_INTENT`, `PATCH_ACK`, `PATCH_VERIFIED`, `TRANSLATOR_INTENT`, `TRANSLATOR_STARTED`, `TRANSLATOR_FINISHED`, and `POST_TRANSLATOR_VERIFIED`. Its phase plus exact scene readback distinguishes patch-not-started, ambiguous or partial patch, patched-but-translator-not-started, and translator-finished-but-not-yet-verified recovery states without placing source text in ordinary logs.
+- The model cache boundary uses a project-owned, rebuildable shadow copy. Locked source files are copied byte-for-byte with size and SHA-256 checks before and after copying; hardlinks are permitted only inside the shadow from blobs to snapshots. A run may link only to the verified shadow, never directly to an AppData cache, and the manifest is revalidated before and after the run. Mutation marks the shadow as requiring rebuild. Cleanup unlinks only exact links created by the run and never recursively enters a junction or other reparse point.
+- This boundary does not claim protection against a malicious local process running with the same user permissions. The remaining acceptance evidence is one authorized real three-page owned-process smoke; no real Koharu, model, GPU, or private-page execution is part of the synthetic implementation result.
+
 Goals:
 
 - retain PaddleOCR-VL and Manga OCR candidates;
-- replace raw-confidence comparison with benchmark-calibrated selection;
-- accept engine agreement directly and arbitrate meaningful disagreements;
-- use page or region type where it materially improves results;
+- keep all cross-engine runtime decisions category-free and independent of raw confidence;
+- accept safe normalized agreement directly and route strict disagreement to QA;
+- prove selected OCR is the actual translation input before enabling the translator;
 - evaluate a manga-specialized Paddle candidate only on the same crops and only after separate download authorization;
-- freeze thresholds only when they improve the working-gold result without worsening structural-negative safety.
+- keep translation disabled unless the owned-process identity, unique project, private patch journal, exact scene readback, epoch expectations, and translator postconditions are all active.
 
-Estimated work: one offline scoring task and, only if justified, one candidate-model task.
+Estimated work: one authorized three-page owned-process smoke, followed by review of its private journal and non-private structural evidence.
 
 ### M4 — Controlled translation selection
 

@@ -8,21 +8,55 @@
     "schemaVersion": { "const": 1 },
     "koharu": {
       "type": "object",
-      "required": ["baseUrl", "requiredVersion", "requestTimeoutMs", "operationTimeoutMs", "allowRemote"],
+      "required": ["mode", "baseUrl", "requiredVersion", "requestTimeoutMs", "operationTimeoutMs", "allowRemote"],
       "properties": {
+        "mode": { "type": "string", "enum": ["external", "owned"] },
         "baseUrl": { "type": "string", "pattern": "^https?://" },
         "requiredVersion": { "type": "string", "minLength": 1 },
         "requestTimeoutMs": { "type": "integer", "minimum": 100 },
         "operationTimeoutMs": { "type": "integer", "minimum": 1000 },
-        "allowRemote": { "type": "boolean" }
+        "allowRemote": { "type": "boolean" },
+        "ownedProcess": {
+          "type": "object",
+          "required": ["executablePath", "host", "port", "allowedRunRoot", "shadowCacheRoot", "shadowCacheManifest", "appDataModelRoots"],
+          "properties": {
+            "executablePath": { "type": "string", "minLength": 1 },
+            "host": { "type": "string", "enum": ["127.0.0.1", "::1"] },
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+            "allowedRunRoot": { "type": "string", "minLength": 1 },
+            "shadowCacheRoot": { "type": "string", "minLength": 1 },
+            "shadowCacheManifest": { "type": "string", "minLength": 1 },
+            "appDataModelRoots": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
+          },
+          "additionalProperties": false
+        }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": { "type": "object", "properties": { "mode": { "const": "owned" } } },
+          "then": { "type": "object", "required": ["ownedProcess"] }
+        },
+        {
+          "if": { "type": "object", "properties": { "mode": { "const": "external" } } },
+          "then": { "type": "object", "not": { "type": "object", "required": ["ownedProcess"] } }
+        }
+      ]
     },
     "quality": {
       "type": "object",
-      "required": ["profile", "primaryOcrHints", "fallbackOcrHints", "primaryInpainterHints", "fallbackInpainterHints", "ocrConfidenceThreshold", "maxTranslationLengthRatio", "minTranslationLengthRatio", "maxRetries", "sfxMaxCharacters", "minGlyphPixels", "structuralProtection"],
+      "required": ["profile", "ocrRuntimePolicy", "primaryOcrHints", "fallbackOcrHints", "primaryInpainterHints", "fallbackInpainterHints", "ocrConfidenceThreshold", "maxTranslationLengthRatio", "minTranslationLengthRatio", "maxRetries", "sfxMaxCharacters", "minGlyphPixels", "structuralProtection"],
       "properties": {
         "profile": { "const": "quality-local" },
+        "ocrRuntimePolicy": {
+          "type": "object",
+          "required": ["name", "version"],
+          "properties": {
+            "name": { "type": "string", "enum": ["strict-quality", "low-manual"] },
+            "version": { "const": 1 }
+          },
+          "additionalProperties": false
+        },
         "primaryOcrHints": { "type": "array", "minItems": 1, "items": { "type": "string" } },
         "fallbackOcrHints": { "type": "array", "minItems": 1, "items": { "type": "string" } },
         "primaryInpainterHints": { "type": "array", "minItems": 1, "items": { "type": "string" } },

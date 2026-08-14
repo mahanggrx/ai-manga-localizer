@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "owned-koharu-identity.schema.json",
+  "title": "OwnedKoharuIdentity",
+  "type": "object",
+  "required": ["schemaVersion", "pid", "startTimeMs", "executablePath", "executableSha256", "localAddress", "localPort", "dataRoot"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "pid": { "type": "integer", "minimum": 1 },
+    "startTimeMs": { "type": "number", "minimum": 0 },
+    "executablePath": { "type": "string", "minLength": 1 },
+    "executableSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "localAddress": { "type": "string", "enum": ["127.0.0.1", "::1"] },
+    "localPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+    "dataRoot": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": false
+}

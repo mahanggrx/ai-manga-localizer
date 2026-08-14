@@ -125,7 +125,7 @@ export function extractRegionsFromScene(scene: JsonObject, options: { ocrEngine:
         : undefined);
     const role = roleDecision.role;
     const region: RegionRecord = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       id: item.id,
       pageId: item.pageId,
       order,
@@ -139,8 +139,7 @@ export function extractRegionsFromScene(scene: JsonObject, options: { ocrEngine:
       ...(bubbleEvidence ? { geometrySource: bubbleEvidence.geometrySource } : {}),
       roleConfidence: roleDecision.confidence,
       roleProvenance: roleDecision.roleProvenance,
-      ...(item.confidence !== undefined ? { ocrConfidence: item.confidence } : {}),
-      ocrCandidates: [{ engine: options.ocrEngine, text: sourceText, confidence: item.confidence, selected: true, selectionReason: "primary-engine-output" }],
+      ocrCandidates: [{ engine: options.ocrEngine, role: "paddle", status: "present", text: sourceText, confidence: item.confidence, selected: true, selectionReason: "primary-engine-output" }],
       translationCandidates: translatedText ? [{ model: options.translationModel, text: translatedText, selected: true, selectionReason: "latest-local-pipeline-output", route: "local" }] : [],
       qaFlags: [],
     };
@@ -252,7 +251,8 @@ export function assessRegion(region: RegionRecord, quality: LocalizerConfig["qua
   const push = (code: string, severity: QaFlag["severity"], retryable: boolean, detail?: string): void => {
     flags.push({ code, severity, retryable, regionId: region.id, pageId: region.pageId, ...(detail ? { detail } : {}) });
   };
-  if (region.ocrConfidence !== undefined && region.ocrConfidence < quality.ocrConfidenceThreshold) push("LOW_OCR_CONFIDENCE", "warning", true);
+  const selectedOcrConfidence = region.ocrCandidates.find((candidate) => candidate.selected)?.confidence;
+  if (selectedOcrConfidence !== undefined && selectedOcrConfidence < quality.ocrConfidenceThreshold) push("LOW_OCR_CONFIDENCE", "warning", true);
   if (/\ufffd|(.)(?:\1){4,}/u.test(region.sourceText)) push("OCR_TEXT_ANOMALY", "warning", true);
   if (!region.translatedText?.trim()) {
     if (region.policy === "replace") push("MISSING_TRANSLATION", "error", true);
@@ -411,10 +411,6 @@ export function markRenderBlockedPages(regions: RegionRecord[], blockedPages: Se
       ],
     };
   });
-}
-
-export function lowOcrPages(regions: RegionRecord[]): string[] {
-  return [...new Set(regions.filter((region) => region.qaFlags.some((flag) => flag.code === "LOW_OCR_CONFIDENCE" || flag.code === "OCR_TEXT_ANOMALY")).map((region) => region.pageId))];
 }
 
 export function qaSummary(regions: RegionRecord[]): Record<string, number> {

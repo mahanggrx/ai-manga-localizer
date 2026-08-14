@@ -8,6 +8,7 @@ import type { LocalizerConfig } from "./types.ts";
 export const DEFAULT_CONFIG: LocalizerConfig = {
   schemaVersion: 1,
   koharu: {
+    mode: "external",
     baseUrl: "http://127.0.0.1:4000/api/v1",
     requiredVersion: "0.61.2",
     requestTimeoutMs: 15_000,
@@ -16,6 +17,7 @@ export const DEFAULT_CONFIG: LocalizerConfig = {
   },
   quality: {
     profile: "quality-local",
+    ocrRuntimePolicy: { name: "strict-quality", version: 1 },
     primaryOcrHints: ["paddle", "vl", "1.6"],
     fallbackOcrHints: ["manga", "ocr"],
     primaryInpainterHints: ["aot"],
@@ -65,6 +67,28 @@ function merge<T>(base: T, override: unknown): T {
   return result as T;
 }
 
+export function assertOwnedKoharuRuntimeConfig(koharu: LocalizerConfig["koharu"]): void {
+  if (koharu.mode !== "owned") return;
+  const owned = koharu.ownedProcess;
+  if (!owned) throw new LocalizerError("CONFIG_OWNED_KOHARU_REQUIRED", "koharu.ownedProcess is required in owned mode");
+  const url = new URL(koharu.baseUrl);
+  const normalizedHost = url.hostname.replace(/^\[|\]$/g, "");
+  const expectedPort = Number(url.port || (url.protocol === "http:" ? 80 : 443));
+  if (
+    normalizedHost !== owned.host
+    || expectedPort !== owned.port
+    || url.protocol !== "http:"
+    || !["/api/v1", "/api/v1/"].includes(url.pathname)
+    || url.username !== ""
+    || url.password !== ""
+    || url.search !== ""
+    || url.hash !== ""
+  ) {
+    throw new LocalizerError("CONFIG_OWNED_KOHARU_ADDRESS_MISMATCH", "koharu.baseUrl must be the credential-free owned loopback HTTP /api/v1 address and port");
+  }
+  if (koharu.allowRemote) throw new LocalizerError("CONFIG_OWNED_KOHARU_REMOTE_INVALID", "owned Koharu mode cannot allow remote service addresses");
+}
+
 export async function loadConfig(configPath?: string): Promise<LocalizerConfig> {
   const resolved = path.resolve(configPath ?? "localizer.config.json");
   let config = DEFAULT_CONFIG;
@@ -76,6 +100,7 @@ export async function loadConfig(configPath?: string): Promise<LocalizerConfig> 
     if (code !== "ENOENT") throw error;
   }
   await assertSchema("localizer-config.schema.json", config);
+  assertOwnedKoharuRuntimeConfig(config.koharu);
   if (config.translation.localTarget.kind === "provider" && config.translation.localTarget.providerId !== "openai-compatible") {
     throw new LocalizerError("CONFIG_LOCAL_TRANSLATOR_PROVIDER_UNSUPPORTED", "translation.localTarget provider must be openai-compatible; remote providers belong in cloudTarget");
   }

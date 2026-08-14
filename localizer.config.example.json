@@ -1,6 +1,7 @@
 {
   "schemaVersion": 1,
   "koharu": {
+    "mode": "external",
     "baseUrl": "http://127.0.0.1:4000/api/v1",
     "requiredVersion": "0.61.2",
     "requestTimeoutMs": 15000,
@@ -9,6 +10,7 @@
   },
   "quality": {
     "profile": "quality-local",
+    "ocrRuntimePolicy": { "name": "strict-quality", "version": 1 },
     "primaryOcrHints": ["paddle", "vl", "1.6"],
     "fallbackOcrHints": ["manga", "ocr"],
     "primaryInpainterHints": ["aot"],

@@ -3,9 +3,9 @@
   "$id": "region-record.schema.json",
   "title": "RegionRecord",
   "type": "object",
-  "required": ["schemaVersion", "id", "pageId", "order", "role", "policy", "sourceText", "ocrCandidates", "translationCandidates", "qaFlags"],
+  "required": ["schemaVersion", "id", "pageId", "order", "role", "policy", "sourceText", "ocrCandidates", "ocrRuntimePolicy", "ocrSelectionReason", "ocrQaReasons", "translationCandidates", "qaFlags"],
   "properties": {
-    "schemaVersion": { "const": 1 },
+    "schemaVersion": { "const": 2 },
     "id": { "type": "string", "minLength": 1 },
     "pageId": { "type": "string", "minLength": 1 },
     "order": { "type": "integer", "minimum": 0 },
@@ -27,21 +27,52 @@
     "geometrySource": { "type": "string", "enum": ["line-polygons", "bbox"] },
     "roleConfidence": { "type": "number", "minimum": 0, "maximum": 1 },
     "roleProvenance": { "type": "string", "enum": ["native", "bubble-mask", "insufficient-evidence"] },
-    "ocrConfidence": { "type": "number", "minimum": 0, "maximum": 1 },
     "ocrCandidates": {
       "type": "array",
-      "minItems": 1,
+      "minItems": 2,
+      "maxItems": 2,
       "items": {
         "type": "object",
-        "required": ["engine", "text", "selected", "selectionReason"],
+        "required": ["engine", "role", "status", "selected", "selectionReason"],
         "properties": {
           "engine": { "type": "string", "minLength": 1 },
+          "role": { "type": "string", "enum": ["paddle", "manga"] },
+          "status": { "type": "string", "enum": ["present", "missing", "not-run"] },
           "text": { "type": "string" },
           "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
           "selected": { "type": "boolean" },
-          "selectionReason": { "type": "string", "minLength": 1 }
+          "selectionReason": { "type": "string", "enum": ["raw-agreement", "normalized-agreement", "low-manual-paddle-precedence", "qa-blocked"] }
         },
+        "allOf": [
+          {
+            "if": { "properties": { "status": { "const": "present" } }, "required": ["status"] },
+            "then": { "required": ["text"] },
+            "else": { "not": { "required": ["text"] } }
+          }
+        ],
         "additionalProperties": false
+      }
+    },
+    "ocrRuntimePolicy": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "type": "string", "enum": ["strict-quality", "low-manual"] },
+        "version": { "const": 1 }
+      },
+      "additionalProperties": false
+    },
+    "selectedOcrEngine": { "type": "string", "minLength": 1 },
+    "ocrSelectionReason": { "type": "string", "enum": ["raw-agreement", "normalized-agreement", "low-manual-paddle-precedence", "qa-blocked"] },
+    "ocrQaReasons": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "fallback-not-run", "candidate-disagreement",
+          "paddle-candidate-missing", "paddle-normalized-empty", "paddle-replacement-character", "paddle-unpaired-surrogate", "paddle-forbidden-control", "paddle-bidi-control",
+          "manga-candidate-missing", "manga-normalized-empty", "manga-replacement-character", "manga-unpaired-surrogate", "manga-forbidden-control", "manga-bidi-control"
+        ]
       }
     },
     "translationCandidates": {
@@ -77,5 +108,38 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": { "properties": { "ocrSelectionReason": { "const": "qa-blocked" } }, "required": ["ocrSelectionReason"] },
+      "then": {
+        "not": { "required": ["selectedOcrEngine"] },
+        "properties": {
+          "ocrCandidates": { "not": { "contains": { "properties": { "selected": { "const": true } }, "required": ["selected"] } } },
+          "ocrQaReasons": { "minItems": 1 }
+        }
+      },
+      "else": {
+        "required": ["selectedOcrEngine"],
+        "properties": {
+          "ocrCandidates": {
+            "contains": { "properties": { "selected": { "const": true } }, "required": ["selected"] },
+            "minContains": 1,
+            "maxContains": 1
+          },
+          "ocrQaReasons": { "maxItems": 0 }
+        }
+      }
+    },
+    {
+      "properties": {
+        "ocrCandidates": {
+          "allOf": [
+            { "contains": { "properties": { "role": { "const": "paddle" } }, "required": ["role"] }, "minContains": 1, "maxContains": 1 },
+            { "contains": { "properties": { "role": { "const": "manga" } }, "required": ["role"] }, "minContains": 1, "maxContains": 1 }
+          ]
+        }
+      }
+    }
+  ],
   "additionalProperties": false
 }

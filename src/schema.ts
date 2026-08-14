@@ -35,12 +35,24 @@ export function validateSchema(value: unknown, schema: Schema, at = "$", errors:
     }
     return validateSchema(value, resolved, at, errors, root);
   }
+  if (Array.isArray(schema.allOf)) {
+    for (const child of schema.allOf) validateSchema(value, child as Schema, at, errors, root);
+  }
+  const matches = (candidate: Schema): boolean => validateSchema(value, candidate, at, [], root).length === 0;
+  if (schema.if && typeof schema.if === "object" && !Array.isArray(schema.if)) {
+    const branch = matches(schema.if as Schema) ? schema.then : schema.else;
+    if (branch && typeof branch === "object" && !Array.isArray(branch)) validateSchema(value, branch as Schema, at, errors, root);
+  }
+  if (schema.not && typeof schema.not === "object" && !Array.isArray(schema.not) && matches(schema.not as Schema)) {
+    errors.push(`${at}: must not match forbidden schema`);
+  }
   const expected = schema.type;
-  if (expected === "object") {
-    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+  const objectValue = typeof value === "object" && value !== null && !Array.isArray(value);
+  if (expected === "object" && !objectValue) {
       errors.push(`${at}: expected object`);
       return errors;
-    }
+  }
+  if (objectValue) {
     const record = value as Record<string, unknown>;
     const required = Array.isArray(schema.required) ? schema.required as string[] : [];
     for (const key of required) if (!(key in record)) errors.push(`${at}.${key}: required`);
@@ -51,16 +63,25 @@ export function validateSchema(value: unknown, schema: Schema, at = "$", errors:
     if (schema.additionalProperties === false) {
       for (const key of Object.keys(record)) if (!(key in properties)) errors.push(`${at}.${key}: unexpected property`);
     }
-  } else if (expected === "array") {
-    if (!Array.isArray(value)) {
+  }
+  if (expected === "array" && !Array.isArray(value)) {
       errors.push(`${at}: expected array`);
       return errors;
-    }
+  }
+  if (Array.isArray(value)) {
     if (typeof schema.minItems === "number" && value.length < schema.minItems) errors.push(`${at}: too few items`);
+    if (typeof schema.maxItems === "number" && value.length > schema.maxItems) errors.push(`${at}: too many items`);
     if (schema.items && typeof schema.items === "object") {
       value.forEach((item, index) => validateSchema(item, schema.items as Schema, `${at}[${index}]`, errors, root));
     }
-  } else if (expected === "string") {
+    if (schema.contains && typeof schema.contains === "object" && !Array.isArray(schema.contains)) {
+      const matchCount = value.filter((item, index) => validateSchema(item, schema.contains as Schema, `${at}[${index}]`, [], root).length === 0).length;
+      const minimum = typeof schema.minContains === "number" ? schema.minContains : 1;
+      if (matchCount < minimum) errors.push(`${at}: contains fewer than ${minimum} matching items`);
+      if (typeof schema.maxContains === "number" && matchCount > schema.maxContains) errors.push(`${at}: contains more than ${schema.maxContains} matching items`);
+    }
+  }
+  if (expected === "string") {
     if (typeof value !== "string") errors.push(`${at}: expected string`);
     else {
       if (typeof schema.minLength === "number" && value.length < schema.minLength) errors.push(`${at}: too short`);

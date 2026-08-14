@@ -14,7 +14,7 @@ Usage:
   manga-localizer benchmark GOLDEN_SET [--out DIRECTORY]
   manga-localizer translate INPUT --out DIRECTORY [--profile quality-local] [--allow-cloud] [--psd] [--config FILE]
 
-The CLI never downloads models, starts Koharu, or overwrites existing output.
+The CLI never downloads models or overwrites existing output. Translation requires owned mode, which starts and verifies an isolated loopback Koharu process.
 `;
 
 interface ParsedArgs {

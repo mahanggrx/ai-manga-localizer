@@ -1,14 +1,22 @@
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { createCbzBuffer, detectMediaType, loadInputImages, readZipImagesBuffer } from "./archive.ts";
 import { buildBubbleMaskEvidence, type BubbleMaskEvidence } from "./bubble-mask.ts";
+import { assertOwnedKoharuRuntimeConfig } from "./config.ts";
 import { asLocalizerError, LocalizerError } from "./errors.ts";
 import { createUniqueDirectory, safeSlug, writeExclusive, writeJsonExclusive } from "./file-utils.ts";
 import { KoharuClient, selectEngine, selectedPipelineEngine } from "./koharu-client.ts";
 import { assertLocalTranslationTarget } from "./local-translation.ts";
 import { logger, type SafeLogger } from "./logger.ts";
-import { applyChapterQa, buildGlossaryPrompt, buildRetryPrompt, chunkPageIds, deriveGlossary, extractPageIds, extractRegionsFromScene, lowOcrPages, markRenderBlockedPages, qaSummary, renderProtectionPlan, translationRetryPages } from "./quality.ts";
+import { applyOcrRuntimeDecisions, applyOcrRuntimePolicy, extractOcrRuntimeRegions, type OcrRuntimePass } from "./ocr-runtime-policy.ts";
+import { OwnedKoharuProcess, createOwnedRunLayout, type OwnedProcessPlatform, type OwnedRunLayout } from "./owned-koharu-process.ts";
+import { applyChapterQa, buildGlossaryPrompt, deriveGlossary, extractPageIds, extractRegionsFromScene, markRenderBlockedPages, qaSummary, renderProtectionPlan, translationRetryPages } from "./quality.ts";
+import { OwnedProjectGuard } from "./run-ownership.ts";
 import { assertSchema } from "./schema.ts";
+import { applyOwnedScenePatch, DurablePrivateJournal, readStableScene, runOwnedTranslator } from "./scene-patch.ts";
+import { sceneFullHash } from "./scene-integrity.ts";
+import { cleanupOwnedCacheLinks, createOwnedRunCacheLink, loadAndValidateShadowCache, type OwnedCacheLink } from "./shadow-model-cache.ts";
 import { assessResourceHeadroom, readSystemMemorySnapshot, type SystemMemorySnapshot } from "./system-resources.ts";
 import type { ChapterManifest, InputImage, JsonObject, JsonValue, LocalizerConfig, RegionRecord, RunReport, StageReport } from "./types.ts";
 
@@ -20,12 +28,13 @@ export interface TranslateOptions {
   logger?: SafeLogger;
   fetchImpl?: typeof fetch;
   readSystemMemory?: () => Promise<SystemMemorySnapshot>;
+  ownedProcessPlatform?: OwnedProcessPlatform;
 }
 
 interface PipelineEngines {
   detect: string[];
   primaryOcr: string;
-  fallbackOcr?: string;
+  fallbackOcr: string;
   translator: string;
   inpainter: string;
   fallbackInpainter?: string;
@@ -53,6 +62,15 @@ function resolveEngines(catalog: JsonValue, runtimeConfig: JsonObject, config: L
   if (!primaryOcr || !translator || !inpainter || !renderer) {
     throw new LocalizerError("PIPELINE_ENGINE_MISSING", "Koharu engine catalog is missing a required OCR, translator, inpainter, or renderer engine");
   }
+  if (!fallbackOcr || fallbackOcr === primaryOcr) {
+    throw new LocalizerError("OCR_RUNTIME_SECOND_ENGINE_MISSING", "quality-local requires distinct Paddle and Manga OCR engines for every eligible region");
+  }
+  if (!/paddle/i.test(primaryOcr)) {
+    throw new LocalizerError("OCR_RUNTIME_PRIMARY_ENGINE_ROLE_MISMATCH", "The primary OCR engine cannot be verified as Paddle OCR");
+  }
+  if (!/manga/i.test(fallbackOcr)) {
+    throw new LocalizerError("OCR_RUNTIME_FALLBACK_ENGINE_ROLE_MISMATCH", "The fallback OCR engine cannot be verified as Manga OCR");
+  }
   const detect = unique([
     selectedPipelineEngine(runtimeConfig, "detector") ?? selectEngine(catalog, "detect", ["layout", "detect"]),
     selectedPipelineEngine(runtimeConfig, "fontDetector"),
@@ -61,7 +79,7 @@ function resolveEngines(catalog: JsonValue, runtimeConfig: JsonObject, config: L
     primaryOcr,
   ]);
   if (detect.length < 2) throw new LocalizerError("DETECTION_PIPELINE_INCOMPLETE", "Could not resolve Koharu detection and OCR engines");
-  return { detect, primaryOcr, fallbackOcr: fallbackOcr !== primaryOcr ? fallbackOcr : undefined, translator, inpainter, fallbackInpainter: fallbackInpainter !== inpainter ? fallbackInpainter : undefined, renderer };
+  return { detect, primaryOcr, fallbackOcr, translator, inpainter, fallbackInpainter: fallbackInpainter !== inpainter ? fallbackInpainter : undefined, renderer };
 }
 
 function imageExtension(mediaType: InputImage["mediaType"]): string {
@@ -101,40 +119,34 @@ export function reassembleRenderedPages(options: {
   return options.scenePageIds.map((pageId, index) => renderedByPageId.get(pageId) ?? options.sourceImages[index]);
 }
 
-function mergeOcrPass(primary: RegionRecord[], fallback: RegionRecord[], fallbackEngine: string): RegionRecord[] {
-  const fallbackById = new Map(fallback.map((region) => [region.id, region]));
-  const merged = primary.map((before) => {
-    const region = fallbackById.get(before.id);
-    if (!region) return before;
-    fallbackById.delete(before.id);
-    const selectedFallback = (region.ocrConfidence ?? 0) >= (before.ocrConfidence ?? 0);
+export function carryOcrProvenance(previous: RegionRecord[], current: RegionRecord[]): RegionRecord[] {
+  const byId = new Map<string, RegionRecord>();
+  for (const region of previous) {
+    if (byId.has(region.id)) throw new LocalizerError("OCR_PROVENANCE_DUPLICATE_REGION", "Selected OCR provenance contains duplicate region identities");
+    byId.set(region.id, region);
+  }
+  const carried = current.map((region) => {
+    const before = byId.get(region.id);
+    if (!before || before.pageId !== region.pageId || !before.bbox || !region.bbox || !isDeepStrictEqual(before.bbox, region.bbox)) {
+      throw new LocalizerError("OCR_PROVENANCE_ASSOCIATION_CONFLICT", "Post-translation scene regions do not match the verified selected OCR population and geometry");
+    }
+    if (region.sourceText !== before.sourceText) {
+      throw new LocalizerError("OCR_PROVENANCE_SOURCE_MISMATCH", "Post-translation scene source text differs from the verified selected OCR input");
+    }
+    byId.delete(region.id);
     return {
-      ...(selectedFallback ? region : before),
-      ocrCandidates: [
-        ...before.ocrCandidates.map((candidate) => ({
-          ...candidate,
-          selected: !selectedFallback,
-          selectionReason: selectedFallback ? "lower-confidence-than-fallback" : "higher-confidence-than-fallback",
-        })),
-        {
-          engine: fallbackEngine,
-          text: region.sourceText,
-          confidence: region.ocrConfidence,
-          selected: selectedFallback,
-          selectionReason: selectedFallback ? "higher-or-equal-confidence-fallback" : "lower-confidence-fallback",
-        },
-      ],
+      ...region,
+      schemaVersion: 2 as const,
+      sourceText: region.sourceText,
+      ocrCandidates: before.ocrCandidates,
+      ocrRuntimePolicy: before.ocrRuntimePolicy,
+      selectedOcrEngine: before.selectedOcrEngine,
+      ocrSelectionReason: before.ocrSelectionReason,
+      ocrQaReasons: before.ocrQaReasons,
     };
   });
-  return [...merged, ...fallbackById.values()];
-}
-
-function carryOcrProvenance(previous: RegionRecord[], current: RegionRecord[]): RegionRecord[] {
-  const byId = new Map(previous.map((region) => [region.id, region]));
-  return current.map((region) => {
-    const before = byId.get(region.id);
-    return before ? { ...region, ocrCandidates: before.ocrCandidates, ocrConfidence: before.ocrConfidence ?? region.ocrConfidence } : region;
-  });
+  if (byId.size !== 0) throw new LocalizerError("OCR_PROVENANCE_ASSOCIATION_CONFLICT", "Post-translation scene is missing verified selected OCR regions");
+  return carried;
 }
 
 function markCloudRoute(regions: RegionRecord[], pages: Set<string>, model: string): RegionRecord[] {
@@ -203,7 +215,16 @@ async function assertHeavyProcessHeadroom(options: TranslateOptions, item: Stage
 }
 
 export async function runTranslate(config: LocalizerConfig, options: TranslateOptions): Promise<{ directory: string; report: RunReport }> {
+  if (config.koharu.mode !== "owned") {
+    throw new LocalizerError(
+      "KOHARU_SAFE_SOURCE_TEXT_WRITEBACK_UNAVAILABLE",
+      "External/shared Koharu mode is read-only and cannot perform scene mutation or translator execution",
+    );
+  }
+  assertOwnedKoharuRuntimeConfig(config.koharu);
   assertImageUploadIsLocal(config.koharu.baseUrl);
+  const ownedConfig = config.koharu.ownedProcess;
+  if (!ownedConfig) throw new LocalizerError("CONFIG_OWNED_KOHARU_REQUIRED", "koharu.ownedProcess is required for translation");
   const safeLogger = options.logger ?? logger;
   const loaded = await loadInputImages(options.inputPath, config);
   const prefix = `translation-results-${path.basename(path.resolve(options.inputPath), path.extname(options.inputPath))}`;
@@ -224,121 +245,177 @@ export async function runTranslate(config: LocalizerConfig, options: TranslateOp
     qaSummary: {},
     artifacts: {},
   };
-  const client = new KoharuClient(config.koharu, { fetchImpl: options.fetchImpl, logger: safeLogger });
+  let client: KoharuClient | undefined;
+  let ownedProcess: OwnedKoharuProcess | undefined;
+  let ownedLayout: OwnedRunLayout | undefined;
+  let ownedLink: OwnedCacheLink | undefined;
+  let ownedStartAttempted = false;
+  let shadowManifestHash: string | undefined;
+  let projectGuard: OwnedProjectGuard | undefined;
+  let journal: DurablePrivateJournal | undefined;
+  const privateRuntime = path.join(output.directory, "private-runtime");
   let llmLoaded = false;
-  let projectCreated = false;
   let regions: RegionRecord[] = [];
   let scenePageIds: string[] = [];
+  let paddlePass: OcrRuntimePass | undefined;
   let bubbleEvidence: BubbleMaskEvidence | undefined;
   try {
+    await mkdir(privateRuntime, { recursive: false, mode: 0o700 });
+    await executeStage(report, checkpoints, "verify-shadow-model-cache", async () => {
+      const verified = await loadAndValidateShadowCache(ownedConfig.shadowCacheRoot, ownedConfig.shadowCacheManifest);
+      shadowManifestHash = verified.manifestHash;
+      return verified;
+    });
+    await executeStage(report, checkpoints, "start-owned-koharu", async () => {
+      ownedLayout = await createOwnedRunLayout(ownedConfig.allowedRunRoot, output.directory);
+      ownedLink = await createOwnedRunCacheLink({
+        runRoot: ownedLayout.root,
+        linkPath: ownedLayout.modelLink,
+        shadowRoot: ownedConfig.shadowCacheRoot,
+        appDataModelRoots: ownedConfig.appDataModelRoots,
+      });
+      const linkedShadow = await loadAndValidateShadowCache(ownedConfig.shadowCacheRoot, ownedConfig.shadowCacheManifest);
+      if (linkedShadow.manifestHash !== shadowManifestHash) throw new LocalizerError("SHADOW_CACHE_REBUILD_REQUIRED", "Shadow cache changed between preflight verification and owned-process start");
+      ownedStartAttempted = true;
+      ownedProcess = await OwnedKoharuProcess.start({
+        executablePath: ownedConfig.executablePath,
+        host: ownedConfig.host,
+        port: ownedConfig.port,
+        dataRoot: ownedLayout.dataRoot,
+        platform: options.ownedProcessPlatform,
+      });
+      await ownedProcess.writeIdentity(path.join(privateRuntime, "owned-process.private.json"));
+    });
+    client = new KoharuClient(config.koharu, {
+      fetchImpl: options.fetchImpl,
+      logger: safeLogger,
+      ownedMutationGuard: () => ownedProcess!.assertIdentity(),
+    });
+    const ownedClient = client;
+    const processIdentity = ownedProcess;
+    const layout = ownedLayout;
+    if (!processIdentity || !layout) throw new LocalizerError("OWNED_KOHARU_START_FAILED", "Owned Koharu identity or run layout was not established");
     const { meta, engines } = await executeStage(report, checkpoints, "connect-koharu", async () => {
-      const meta = await client.getMeta();
+      await processIdentity.assertIdentity();
+      const meta = await ownedClient.getMeta();
       if (meta.version.replace(/^v/, "") !== config.koharu.requiredVersion.replace(/^v/, "")) throw new LocalizerError("KOHARU_VERSION_MISMATCH", `Required ${config.koharu.requiredVersion}, found ${meta.version}`);
-      const engines = await client.getEngines();
+      const engines = await ownedClient.getEngines();
       report.koharuVersion = meta.version;
       return { meta, engines };
     });
     safeLogger.info("KOHARU_CONNECTED", { runId: report.runId, version: meta.version, device: typeof meta.device === "string" ? meta.device : undefined });
-    const runtimeConfig = await client.getConfig();
+    const runtimeConfig = await ownedClient.getConfig();
     assertLocalTranslationTarget(config.translation.localTarget, runtimeConfig);
     const pipeline = resolveEngines(engines, runtimeConfig, config);
 
     await executeStage(report, checkpoints, "create-project-and-upload", async () => {
-      await client.createProject(`${safeSlug(path.basename(options.inputPath))}-${report.runId.slice(0, 8)}`);
-      projectCreated = true;
-      await client.uploadPages(loaded.images);
+      await processIdentity.assertIdentity();
+      const project = await ownedClient.createProject(`${safeSlug(path.basename(options.inputPath))}-${report.runId.slice(0, 8)}`);
+      projectGuard = new OwnedProjectGuard({
+        client: ownedClient,
+        project,
+        projectsRoot: layout.projects,
+        assertProcess: () => processIdentity.assertIdentity(),
+      });
+      await projectGuard.assertProjectIdentity();
+      await ownedClient.uploadPages(loaded.images);
     });
+    const guard = projectGuard;
+    if (!guard) throw new LocalizerError("OWNED_KOHARU_PROJECT_IDENTITY_MISSING", "Owned project identity was not established");
 
     await executeStage(report, checkpoints, "detect-and-primary-ocr", async (item) => {
       await assertHeavyProcessHeadroom(options, item);
-      const run = await client.runPipeline({ steps: pipeline.detect });
+      await guard.assertProjectIdentity();
+      const run = await ownedClient.runPipeline({ steps: pipeline.detect });
       item.warnings.push(...run.warnings.map(() => "KOHARU_PIPELINE_WARNING"));
     });
 
     regions = await executeStage(report, checkpoints, "inspect-primary-ocr", async () => {
-      const scene = await client.getScene();
+      await guard.assertProjectIdentity();
+      const scene = await ownedClient.getScene();
       scenePageIds = extractPageIds(scene);
-      bubbleEvidence = await buildBubbleMaskEvidence(scene, (hash) => client.readBlob(hash));
+      bubbleEvidence = await buildBubbleMaskEvidence(scene, (hash) => ownedClient.readBlob(hash));
+      paddlePass = { status: "ran", engine: pipeline.primaryOcr, regions: extractOcrRuntimeRegions(scene) };
       const extracted = extractRegionsFromScene(scene, { ocrEngine: pipeline.primaryOcr, translationModel: config.translation.localTarget.modelId, quality: config.quality, bubbleEvidence });
-      if (extracted.length === 0) throw new LocalizerError("SCENE_TEXT_NOT_FOUND", "Koharu scene contains no recognizable source-text regions; the scene schema may be incompatible", { recoverable: true });
+      if (paddlePass.regions.length === 0) throw new LocalizerError("SCENE_TEXT_NOT_FOUND", "Koharu scene contains no recognizable OCR-eligible text regions; the scene schema may be incompatible", { recoverable: true });
       return extracted;
     });
 
-    const fallbackPages = lowOcrPages(regions);
-    if (fallbackPages.length > 0 && pipeline.fallbackOcr) {
-      const before = regions;
-      await executeStage(report, checkpoints, "fallback-ocr", async (item) => {
-        const run = await client.runPipeline({ steps: [pipeline.fallbackOcr!], pages: fallbackPages });
-        item.warnings.push(...run.warnings.map(() => "KOHARU_PIPELINE_WARNING"));
-      });
-      const fallback = extractRegionsFromScene(await client.getScene(), { ocrEngine: pipeline.fallbackOcr, translationModel: config.translation.localTarget.modelId, quality: config.quality, bubbleEvidence });
-      regions = mergeOcrPass(before, fallback, pipeline.fallbackOcr);
+    if (!paddlePass) throw new LocalizerError("OCR_RUNTIME_PRIMARY_PASS_MISSING", "Paddle OCR inspection did not produce a runtime pass");
+    const confirmedPaddlePass = paddlePass;
+    const eligiblePages = unique(confirmedPaddlePass.regions.map((region) => region.pageId));
+    await executeStage(report, checkpoints, "manga-ocr-all-eligible-pages", async (item) => {
+      await guard.assertProjectIdentity();
+      const run = await ownedClient.runPipeline({ steps: [pipeline.fallbackOcr], pages: eligiblePages });
+      item.warnings.push(...run.warnings.map(() => "KOHARU_PIPELINE_WARNING"));
+    });
+    const fallbackSnapshot = await readStableScene(ownedClient, async () => {
+      await guard.assertIdentity();
+      await guard.assertProjectIdentity();
+    });
+    const fallbackScene = fallbackSnapshot.scene;
+    const mangaPass: OcrRuntimePass = { status: "ran", engine: pipeline.fallbackOcr, regions: extractOcrRuntimeRegions(fallbackScene) };
+    const arbitration = applyOcrRuntimePolicy(confirmedPaddlePass, mangaPass, config.quality.ocrRuntimePolicy.name);
+    if (arbitration.blocked) {
+      throw new LocalizerError("OCR_RUNTIME_QA_BLOCKED", "OCR runtime policy blocked translation because one or more eligible regions lack safe agreement or a required candidate");
     }
+    regions = applyOcrRuntimeDecisions(regions, arbitration);
+    await guard.establishSceneIdentity(fallbackSnapshot, path.join(privateRuntime, "owned-project.private.json"));
+
+    journal = await DurablePrivateJournal.create(path.join(privateRuntime, "journal"));
+    const patchResult = await executeStage(report, checkpoints, "selected-ocr-scene-patch", async () => {
+      return await applyOwnedScenePatch({
+        client: ownedClient,
+        guard,
+        journal: journal!,
+        selected: regions.map((region) => ({ pageId: region.pageId, regionId: region.id, selectedSourceText: region.sourceText })),
+      });
+    });
 
     await executeStage(report, checkpoints, "load-local-translator", async (item) => {
       await assertHeavyProcessHeadroom(options, item);
-      await client.loadLlm(config.translation.localTarget);
+      await guard.assertProjectIdentity(patchResult.snapshot);
+      await ownedClient.loadLlm(config.translation.localTarget);
       llmLoaded = true;
-      await client.waitForLlmReady();
+      await ownedClient.waitForLlmReady();
     });
 
     const orderedPages = scenePageIds.length > 0 ? scenePageIds : unique(regions.map((region) => region.pageId));
-    const chunks = chunkPageIds(orderedPages, config.translation.chunkPages, config.translation.contextOverlapPages);
-    if (chunks.length === 0) throw new LocalizerError("TRANSLATION_CHUNKS_EMPTY", "No page ids are available for chapter translation");
-    for (let index = 0; index < chunks.length; index += 1) {
-      const pages = chunks[index];
-      await executeStage(report, checkpoints, `translate-chunk-${index + 1}-of-${chunks.length}`, async (item) => {
-        const run = await client.runPipeline({
+    const translationPages = unique(regions.map((region) => region.pageId));
+    if (translationPages.length === 0) throw new LocalizerError("TRANSLATION_PAGES_EMPTY", "No selected OCR pages are available for chapter translation");
+    const translated = await executeStage(report, checkpoints, "translate-selected-source", async (item) => {
+      const result = await runOwnedTranslator({
+        client: ownedClient,
+        guard,
+        journal: journal!,
+        expectedPatchedSnapshot: patchResult.snapshot,
+        selected: regions.map((region) => ({ pageId: region.pageId, regionId: region.id, selectedSourceText: region.sourceText })),
+        request: {
           steps: [pipeline.translator],
-          pages,
+          pages: translationPages,
+          textNodeIds: regions.map((region) => region.id),
           targetLanguage: config.translation.targetLanguage,
           systemPrompt: buildGlossaryPrompt(config.translation.systemPrompt, deriveGlossary(regions)),
-        });
-        item.warnings.push(...run.warnings.map(() => "KOHARU_PIPELINE_WARNING"));
+        },
       });
-      regions = applyChapterQa(carryOcrProvenance(regions, extractRegionsFromScene(await client.getScene(), { ocrEngine: pipeline.primaryOcr, translationModel: config.translation.localTarget.modelId, quality: config.quality, bubbleEvidence })), config.quality);
+      item.warnings.push(...result.warnings.map(() => "KOHARU_PIPELINE_WARNING"));
+      return result;
+    });
+    regions = applyChapterQa(carryOcrProvenance(regions, extractRegionsFromScene(translated.snapshot.scene, { ocrEngine: pipeline.primaryOcr, translationModel: config.translation.localTarget.modelId, quality: config.quality, bubbleEvidence })), config.quality);
+    const retryPages = translationRetryPages(regions);
+    if (retryPages.length > 0) {
+      report.stages.push({ name: "owned-translation-retry", status: "warning", warnings: ["OWNED_SINGLE_WRITER_RETRY_NOT_RUN"] });
     }
-
-    let retryPages = translationRetryPages(regions);
-    for (let retry = 1; retry <= config.quality.maxRetries && retryPages.length > 0; retry += 1) {
-      const beforeRetry = regions;
-      await executeStage(report, checkpoints, `local-quality-retry-${retry}`, async (item) => {
-        const run = await client.runPipeline({
-          steps: [pipeline.translator],
-          pages: retryPages,
-          targetLanguage: config.translation.targetLanguage,
-          systemPrompt: buildRetryPrompt(config.translation.retryPrompt, deriveGlossary(regions)),
-        });
-        item.warnings.push(...run.warnings.map(() => "KOHARU_PIPELINE_WARNING"));
+    await executeStage(report, checkpoints, "post-translator-render-gate", async () => {
+      const immediatelyBeforeRender = await readStableScene(ownedClient, async () => {
+        await guard.assertIdentity();
+        await guard.assertProjectIdentity();
       });
-      regions = applyChapterQa(carryOcrProvenance(beforeRetry, extractRegionsFromScene(await client.getScene(), { ocrEngine: pipeline.primaryOcr, translationModel: config.translation.localTarget.modelId, quality: config.quality, bubbleEvidence })), config.quality);
-      retryPages = translationRetryPages(regions);
-    }
-
-    const cloudPages = translationRetryPages(regions);
-    if (options.allowCloud && cloudPages.length > 0) {
-      if (!config.translation.cloudTarget) {
-        report.stages.push({ name: "cloud-fallback", status: "warning", warnings: ["CLOUD_TARGET_NOT_CONFIGURED"] });
-      } else {
-        await executeStage(report, checkpoints, "cloud-text-fallback", async (item) => {
-          await client.unloadLlm();
-          llmLoaded = false;
-          await client.loadLlm(config.translation.cloudTarget!);
-          llmLoaded = true;
-          await client.waitForLlmReady();
-          const run = await client.runPipeline({
-            steps: [pipeline.translator],
-            pages: cloudPages,
-            targetLanguage: config.translation.targetLanguage,
-            systemPrompt: buildRetryPrompt(config.translation.retryPrompt, deriveGlossary(regions)),
-          });
-          item.warnings.push(...run.warnings.map(() => "KOHARU_PIPELINE_WARNING"));
-        });
-        const cloudSet = new Set(cloudPages);
-        regions = markCloudRoute(applyChapterQa(carryOcrProvenance(regions, extractRegionsFromScene(await client.getScene(), { ocrEngine: pipeline.primaryOcr, translationModel: config.translation.cloudTarget.modelId, quality: config.quality, bubbleEvidence })), config.quality), cloudSet, config.translation.cloudTarget.modelId);
-        report.cloudRegions = regions.filter((region) => cloudSet.has(region.pageId)).map((region) => region.id);
+      await guard.assertProjectIdentity(immediatelyBeforeRender);
+      if (sceneFullHash(immediatelyBeforeRender) !== sceneFullHash(translated.snapshot)) {
+        throw new LocalizerError("KOHARU_POST_TRANSLATOR_SCENE_DRIFT", "Scene changed after translator verification and before inpaint/render");
       }
-    }
+    });
 
     const preservationReasons = renderProtectionPlan(orderedPages, regions, config.quality.structuralProtection);
     const preservedPages = preservationReasons.map((item) => item.pageId);
@@ -357,7 +434,11 @@ export async function runTranslate(config: LocalizerConfig, options: TranslateOp
     });
 
     await executeStage(report, checkpoints, "release-llm", async (item) => {
-      try { await client.unloadLlm(); llmLoaded = false; } catch { item.warnings.push("LLM_UNLOAD_FAILED"); }
+      try {
+        await guard.assertProjectIdentity();
+        await ownedClient.unloadLlm();
+        llmLoaded = false;
+      } catch { item.warnings.push("LLM_UNLOAD_FAILED"); }
     });
 
     await executeStage(report, checkpoints, "inpaint", async (item) => {
@@ -365,7 +446,8 @@ export async function runTranslate(config: LocalizerConfig, options: TranslateOp
         item.warnings.push("ALL_PAGES_PRESERVED_AFTER_BLOCKING_QA");
         return;
       }
-      const run = await client.runPipeline({ steps: [pipeline.inpainter], pages: renderPages });
+      await guard.assertProjectIdentity();
+      const run = await ownedClient.runPipeline({ steps: [pipeline.inpainter], pages: renderPages });
       item.warnings.push(...run.warnings.map(() => "KOHARU_PIPELINE_WARNING"));
     });
     await executeStage(report, checkpoints, "render", async (item) => {
@@ -373,14 +455,16 @@ export async function runTranslate(config: LocalizerConfig, options: TranslateOp
         item.warnings.push("ALL_PAGES_PRESERVED_AFTER_BLOCKING_QA");
         return;
       }
-      const run = await client.runPipeline({ steps: [pipeline.renderer], pages: renderPages });
+      await guard.assertProjectIdentity();
+      const run = await ownedClient.runPipeline({ steps: [pipeline.renderer], pages: renderPages });
       item.warnings.push(...run.warnings.map(() => "KOHARU_PIPELINE_WARNING"));
     });
 
     const rendered = await executeStage(report, checkpoints, "export-and-structural-visual-qa", async (item) => {
       let exported: InputImage[] = [];
       if (renderPages.length > 0) {
-        const renderedExport = await client.exportProject("rendered", renderPages);
+        await guard.assertProjectIdentity();
+        const renderedExport = await ownedClient.exportProject("rendered", renderPages);
         exported = exportedImages(renderedExport.bytes, renderedExport.contentType, config);
       }
       const images = reassembleRenderedPages({
@@ -405,11 +489,12 @@ export async function runTranslate(config: LocalizerConfig, options: TranslateOp
       }
       const cbzPath = path.join(output.directory, "translated.cbz");
       await writeExclusive(cbzPath, createCbzBuffer(rendered.map((image, index) => ({ fileName: `${String(index + 1).padStart(4, "0")}${imageExtension(image.mediaType)}`, bytes: image.bytes }))));
-      const khr = await client.exportProject("khr");
+      await guard.assertProjectIdentity();
+      const khr = await ownedClient.exportProject("khr");
       if (khr.bytes.length === 0) throw new LocalizerError("KHR_EXPORT_EMPTY", "Koharu returned an empty KHR export");
       await writeExclusive(path.join(output.directory, "chapter.khr"), khr.bytes);
       if (options.psd) {
-        const psd = await client.exportProject("psd");
+        const psd = await ownedClient.exportProject("psd");
         if (psd.bytes.length === 0) throw new LocalizerError("PSD_EXPORT_EMPTY", "Koharu returned an empty PSD export");
         const extension = psd.contentType.includes("zip") ? "zip" : "psd";
         await writeExclusive(path.join(output.directory, `editable-psd.${extension}`), psd.bytes);
@@ -449,42 +534,36 @@ export async function runTranslate(config: LocalizerConfig, options: TranslateOp
     report.qaSummary = qaSummary(regions);
     report.failure = { code: failure.code, message: failure.message, recoverable: failure.recoverable };
     safeLogger.error("TRANSLATION_FAILED", { runId: report.runId, errorCode: failure.code, status: "failed" });
-    if (projectCreated) {
-      await executeStage(report, checkpoints, "recover-partial-artifacts", async (item) => {
-        let recovered = 0;
-        try {
-          const khr = await client.exportProject("khr");
-          if (khr.bytes.length > 0) {
-            await writeExclusive(path.join(output.directory, "recovery-partial.khr"), khr.bytes);
-            report.artifacts.recoveryKhr = "recovery-partial.khr";
-            recovered += 1;
-          }
-        } catch { item.warnings.push("PARTIAL_KHR_RECOVERY_UNAVAILABLE"); }
-        try {
-          const renderedExport = await client.exportProject("rendered");
-          const images = exportedImages(renderedExport.bytes, renderedExport.contentType, config);
-          if (images.length > 0) {
-            const recoveryDirectory = path.join(output.directory, "recovery-rendered");
-            await mkdir(recoveryDirectory, { recursive: false });
-            const cbzFiles: Array<{ fileName: string; bytes: Uint8Array }> = [];
-            for (let index = 0; index < images.length; index += 1) {
-              const fileName = `${String(index + 1).padStart(4, "0")}${imageExtension(images[index].mediaType)}`;
-              await writeExclusive(path.join(recoveryDirectory, fileName), images[index].bytes);
-              cbzFiles.push({ fileName, bytes: images[index].bytes });
-            }
-            await writeExclusive(path.join(output.directory, "recovery-partial.cbz"), createCbzBuffer(cbzFiles));
-            report.artifacts.recoveryRenderedDirectory = "recovery-rendered";
-            report.artifacts.recoveryCbz = "recovery-partial.cbz";
-            recovered += 1;
-          }
-        } catch { item.warnings.push("PARTIAL_RENDER_RECOVERY_UNAVAILABLE"); }
-        if (recovered === 0) item.warnings.push("NO_PARTIAL_ARTIFACT_RECOVERED");
-      }).catch(() => undefined);
-    }
     report.finishedAt = new Date().toISOString();
   } finally {
-    if (llmLoaded) {
-      try { await client.unloadLlm(); } catch { /* best effort release of an external runtime */ }
+    const recordCleanupFailure = (error: unknown): void => {
+      const failure = asLocalizerError(error, "OWNED_KOHARU_CLEANUP_FAILED");
+      report.status = "failed";
+      report.failure = { code: failure.code, message: failure.message, recoverable: false };
+      report.finishedAt = new Date().toISOString();
+    };
+    if (llmLoaded && client && ownedProcess) {
+      try {
+        await ownedProcess.assertIdentity();
+        await client.unloadLlm();
+        llmLoaded = false;
+      } catch (error) { recordCleanupFailure(error); }
+    }
+    let stopped = false;
+    if (ownedProcess) {
+      try {
+        await ownedProcess.stop();
+        stopped = true;
+      } catch (error) { recordCleanupFailure(error); }
+    }
+    if (ownedLink && ownedLayout && ((!ownedStartAttempted) || stopped)) {
+      try { await cleanupOwnedCacheLinks(ownedLayout.root, [ownedLink]); } catch (error) { recordCleanupFailure(error); }
+    }
+    if ((!ownedStartAttempted || stopped) && shadowManifestHash) {
+      try {
+        const after = await loadAndValidateShadowCache(ownedConfig.shadowCacheRoot, ownedConfig.shadowCacheManifest);
+        if (after.manifestHash !== shadowManifestHash) throw new LocalizerError("SHADOW_CACHE_REBUILD_REQUIRED", "Shadow cache manifest identity changed during the owned run");
+      } catch (error) { recordCleanupFailure(error); }
     }
   }
   report.artifacts.report = "report.json";

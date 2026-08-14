@@ -6,6 +6,9 @@ import { DEFAULT_CONFIG } from "../src/config.ts";
 import { compatibleVersion } from "../src/doctor.ts";
 import { KoharuClient, flattenEngineIds, selectEngine, selectedPipelineEngine } from "../src/koharu-client.ts";
 
+const OWNED_CLIENT_CONFIG = { ...DEFAULT_CONFIG.koharu, mode: "owned" as const };
+const ownedMutationGuard = async (): Promise<void> => undefined;
+
 test("Koharu client reads meta, catalogs engines, and completes an SSE job", async () => {
   let operation = "op-1";
   const server = createServer((request, response) => {
@@ -28,7 +31,7 @@ test("Koharu client reads meta, catalogs engines, and completes an SSE job", asy
   await once(server, "listening");
   const address = server.address();
   assert.ok(address && typeof address === "object");
-  const client = new KoharuClient({ ...DEFAULT_CONFIG.koharu, baseUrl: `http://127.0.0.1:${address.port}/api/v1`, operationTimeoutMs: 2000 });
+  const client = new KoharuClient({ ...OWNED_CLIENT_CONFIG, baseUrl: `http://127.0.0.1:${address.port}/api/v1`, operationTimeoutMs: 2000 }, { ownedMutationGuard });
   try {
     const meta = await client.getMeta();
     assert.equal(meta.version, "0.61.2");
@@ -142,7 +145,8 @@ test("pipeline selection accepts Koharu snake_case stage keys", () => {
 
 test("LLM load uses the Koharu 0.61.2 target envelope", async () => {
   let body: unknown;
-  const client = new KoharuClient(DEFAULT_CONFIG.koharu, {
+  const client = new KoharuClient(OWNED_CLIENT_CONFIG, {
+    ownedMutationGuard,
     fetchImpl: async (_input, init) => {
       body = JSON.parse(String(init?.body));
       return new Response(null, { status: 204 });
@@ -222,4 +226,44 @@ test("blob reads time out without logging hashes, response bodies, or image deta
     return true;
   });
   assert.deepEqual(logCalls, []);
+});
+
+test("0.61.2 scene, project, operation, Batch, and textNodeIds contracts are typed and exact", async () => {
+  const requests: Array<{ path: string; method: string; body?: unknown }> = [];
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const url = new URL(String(input));
+    const method = init?.method ?? "GET";
+    const body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
+    requests.push({ path: url.pathname, method, body });
+    const json = (value: unknown) => new Response(JSON.stringify(value), { headers: { "content-type": "application/json" } });
+    if (url.pathname.endsWith("/scene.json")) return json({ epoch: 4, scene: { pages: {} } });
+    if (url.pathname.endsWith("/operations")) return json({ operations: [] });
+    if (url.pathname.endsWith("/projects") && method === "POST") return json({ project: { id: "project-1", name: "owned" } });
+    if (url.pathname.endsWith("/projects")) return json({ projects: [{ id: "project-1", name: "owned" }] });
+    if (url.pathname.endsWith("/history/apply")) return json({ epoch: 5 });
+    if (url.pathname.endsWith("/pipelines")) return json({ operationId: "op-text" });
+    return json({});
+  };
+  const client = new KoharuClient(OWNED_CLIENT_CONFIG, { fetchImpl, ownedMutationGuard });
+  assert.deepEqual(await client.getSceneSnapshot(), { epoch: 4, scene: { pages: {} } });
+  assert.deepEqual(await client.getOperationSnapshot(), { operations: [] });
+  assert.equal((await client.createProject("owned")).id, "project-1");
+  assert.deepEqual((await client.listProjects()).projects.map((project) => project.id), ["project-1"]);
+  assert.deepEqual(await client.applySourceTextBatch(4, [{ pageId: "p1", nodeId: "r1", sourceText: "private-source" }], "selected OCR"), { epoch: 5 });
+  assert.equal(await client.startPipeline({ steps: ["translator"], pages: ["p1"], textNodeIds: ["r1"] }), "op-text");
+  const history = requests.find((request) => request.path.endsWith("/history/apply"));
+  assert.deepEqual(history?.body, {
+    batch: { label: "selected OCR", ops: [{ updateNode: { page: "p1", id: "r1", patch: { data: { text: { text: "private-source" } } } } }] },
+  });
+  const pipeline = requests.find((request) => request.path.endsWith("/pipelines"));
+  assert.deepEqual(pipeline?.body, { steps: ["translator"], pages: ["p1"], textNodeIds: ["r1"] });
+});
+
+test("external client mutation APIs fail before network access", async () => {
+  let fetchCalls = 0;
+  const client = new KoharuClient(DEFAULT_CONFIG.koharu, { fetchImpl: async () => { fetchCalls += 1; return new Response("{}"); } });
+  await assert.rejects(() => client.createProject("forbidden"), (error: unknown) => (error as { code?: string }).code === "KOHARU_SAFE_SOURCE_TEXT_WRITEBACK_UNAVAILABLE");
+  await assert.rejects(() => client.startPipeline({ steps: ["translator"] }), (error: unknown) => (error as { code?: string }).code === "KOHARU_SAFE_SOURCE_TEXT_WRITEBACK_UNAVAILABLE");
+  await assert.rejects(() => client.applySourceTextBatch(0, [{ pageId: "p", nodeId: "n", sourceText: "private" }], "forbidden"), (error: unknown) => (error as { code?: string }).code === "KOHARU_SAFE_SOURCE_TEXT_WRITEBACK_UNAVAILABLE");
+  assert.equal(fetchCalls, 0);
 });

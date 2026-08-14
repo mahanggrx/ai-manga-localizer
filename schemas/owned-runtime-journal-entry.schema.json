@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "owned-runtime-journal-entry.schema.json",
+  "title": "OwnedRuntimeJournalEntry",
+  "type": "object",
+  "required": ["schemaVersion", "sequence", "phase", "recordedAt"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "sequence": { "type": "integer", "minimum": 0, "maximum": 7 },
+    "phase": {
+      "type": "string",
+      "enum": ["PREPARED", "PATCH_INTENT", "PATCH_ACK", "PATCH_VERIFIED", "TRANSLATOR_INTENT", "TRANSLATOR_STARTED", "TRANSLATOR_FINISHED", "POST_TRANSLATOR_VERIFIED"]
+    },
+    "recordedAt": { "type": "string", "minLength": 1 },
+    "epoch": { "type": "integer", "minimum": 0 },
+    "fullHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "structureHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "operationId": { "type": "string", "minLength": 1 },
+    "count": { "type": "integer", "minimum": 0 },
+    "responseObserved": { "type": "boolean" },
+    "allowedFields": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+  },
+  "additionalProperties": false
+}

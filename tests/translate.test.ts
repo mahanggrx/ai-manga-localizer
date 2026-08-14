@@ -1,11 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { access, mkdtemp, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DEFAULT_CONFIG } from "../src/config.ts";
-import { reassembleRenderedPages, runTranslate } from "../src/translate.ts";
-import type { InputImage } from "../src/types.ts";
+import { carryOcrProvenance, reassembleRenderedPages, runTranslate } from "../src/translate.ts";
+import type { InputImage, RegionRecord } from "../src/types.ts";
 import type { SafeLogger } from "../src/logger.ts";
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4, 5, 6, 7, 8]);
@@ -37,7 +37,37 @@ test("rendered page assembly preserves blocked pages in original order", () => {
   );
 });
 
-test("translate orchestrates the documented Koharu API and emits immutable artifacts", async () => {
+test("carrying OCR provenance preserves verified sourceText and fails closed on population drift", () => {
+  const selected: RegionRecord = {
+    schemaVersion: 2,
+    id: "r1",
+    pageId: "p1",
+    order: 0,
+    role: "dialogue",
+    policy: "replace",
+    sourceText: "verified-selected-source",
+    bbox: { x: 0, y: 0, width: 1, height: 1 },
+    ocrRuntimePolicy: { name: "strict-quality", version: 1 },
+    selectedOcrEngine: "paddle-ocr",
+    ocrSelectionReason: "raw-agreement",
+    ocrQaReasons: [],
+    ocrCandidates: [
+      { engine: "paddle-ocr", role: "paddle", status: "present", text: "verified-selected-source", selected: true, selectionReason: "raw-agreement" },
+      { engine: "manga-ocr", role: "manga", status: "present", text: "verified-selected-source", selected: false, selectionReason: "raw-agreement" },
+    ],
+    translationCandidates: [],
+    qaFlags: [],
+  };
+  const reread = { ...selected, translatedText: "translated" };
+  const carried = carryOcrProvenance([selected], [reread]);
+  assert.equal(carried[0].sourceText, "verified-selected-source");
+  assert.equal(carried[0].translatedText, "translated");
+  assert.throws(() => carryOcrProvenance([selected], [{ ...reread, sourceText: "stale-scene-source" }]), (error: unknown) => (error as { code?: string }).code === "OCR_PROVENANCE_SOURCE_MISMATCH");
+  assert.throws(() => carryOcrProvenance([selected], []), /missing verified selected OCR regions/);
+  assert.throws(() => carryOcrProvenance([selected], [{ ...reread, bbox: { x: 1, y: 0, width: 1, height: 1 } }]), /population and geometry/);
+});
+
+test("external/shared Koharu mode stops before every project, scene mutation, and translator call", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "manga-localizer-translate-"));
   const input = path.join(root, "input");
   const output = path.join(root, "output");
@@ -46,8 +76,13 @@ test("translate orchestrates the documented Koharu API and emits immutable artif
   let latestOperation = "none";
   let operationIndex = 0;
   let translated = false;
-  let failTranslation = false;
+  let translatorCalls = 0;
+  let fallbackCalls = 0;
+  let llmLoadCalls = 0;
+  let historyApplyCalls = 0;
+  let fetchCalls = 0;
   const fetchImpl: typeof fetch = async (inputValue, init) => {
+    fetchCalls += 1;
     const url = new URL(String(inputValue));
     const method = init?.method ?? "GET";
     const json = (value: unknown, status = 200): Response => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
@@ -60,13 +95,17 @@ test("translate orchestrates the documented Koharu API and emits immutable artif
     if (url.pathname.endsWith("/config")) return json({ pipeline: { detector: "layout-detector", segmenter: "text-segmenter", ocr: "paddle-ocr-vl-1.6", translator: "llm-translator", inpainter: "aot-inpainting", renderer: "manga-renderer" } });
     if (url.pathname.endsWith("/projects") || url.pathname.endsWith("/pages")) return json({ ok: true });
     if (url.pathname.endsWith("/llm/current") && method === "GET") return json({ status: "loaded" });
-    if (url.pathname.endsWith("/llm/current")) return new Response(null, { status: 204 });
+    if (url.pathname.endsWith("/llm/current")) { llmLoadCalls += 1; return new Response(null, { status: 204 }); }
+    if (url.pathname.endsWith("/history/apply")) { historyApplyCalls += 1; return json({ epoch: 1 }); }
     if (url.pathname.endsWith("/pipelines")) {
       const body = JSON.parse(String(init?.body ?? "{}"));
-      if (failTranslation && Array.isArray(body.steps) && body.steps.includes("llm-translator")) return json({ message: "private OCR text" }, 409);
       operationIndex += 1;
       latestOperation = `op-${operationIndex}`;
-      if (Array.isArray(body.steps) && body.steps.includes("llm-translator")) translated = true;
+      if (Array.isArray(body.steps) && body.steps.includes("llm-translator")) { translated = true; translatorCalls += 1; }
+      if (Array.isArray(body.steps) && body.steps.includes("manga-ocr")) {
+        fallbackCalls += 1;
+        assert.deepEqual(body.pages, ["p1"]);
+      }
       return json({ operationId: latestOperation });
     }
     if (url.pathname.endsWith("/events")) {
@@ -81,33 +120,17 @@ test("translate orchestrates the documented Koharu API and emits immutable artif
     return json({ error: "not found" }, 404);
   };
   const config = { ...DEFAULT_CONFIG, koharu: { ...DEFAULT_CONFIG.koharu, requestTimeoutMs: 2000, operationTimeoutMs: 5000 } };
-  const result = await runTranslate(config, { inputPath: input, outputParent: output, allowCloud: false, psd: false, fetchImpl, logger: silentLogger, readSystemMemory: healthyMemory });
-  assert.equal(result.report.status, "completed-with-warnings");
-  for (const file of ["translated.cbz", "chapter.khr", "chapter-manifest.json", "report.json", "rendered/0001.png"]) {
-    await assert.doesNotReject(() => access(path.join(result.directory, file)));
-  }
-  assert.equal(result.report.cloudRegions.length, 0);
-
-  translated = false;
-  failTranslation = true;
   await assert.rejects(
     () => runTranslate(config, { inputPath: input, outputParent: output, allowCloud: false, psd: false, fetchImpl, logger: silentLogger, readSystemMemory: healthyMemory }),
-    (error: unknown) => (error as { code?: string }).code === "KOHARU_EPOCH_CONFLICT" && !String((error as Error).message).includes("private OCR text"),
+    (error: unknown) => (error as { code?: string }).code === "KOHARU_SAFE_SOURCE_TEXT_WRITEBACK_UNAVAILABLE",
   );
-  const runs = await readdir(output, { withFileTypes: true });
-  let recoveredRun: string | undefined;
-  for (const entry of runs) {
-    if (!entry.isDirectory()) continue;
-    const candidate = path.join(output, entry.name);
-    try { await access(path.join(candidate, "recovery-partial.khr")); recoveredRun = candidate; break; } catch { /* not the failed run */ }
-  }
-  assert.ok(recoveredRun);
-  await assert.doesNotReject(() => access(path.join(recoveredRun!, "recovery-partial.cbz")));
-  const recoveryReport = JSON.parse(await readFile(path.join(recoveredRun!, "report.json"), "utf8"));
-  assert.equal(recoveryReport.status, "failed");
-  assert.equal(recoveryReport.failure.code, "KOHARU_EPOCH_CONFLICT");
-
-  const operationsBeforeLowMemory = operationIndex;
+  assert.equal(fetchCalls, 0);
+  assert.equal(fallbackCalls, 0);
+  assert.equal(translatorCalls, 0);
+  assert.equal(llmLoadCalls, 0);
+  assert.equal(historyApplyCalls, 0);
+  assert.equal(translated, false);
+  let memoryRead = false;
   await assert.rejects(
     () => runTranslate(config, {
       inputPath: input,
@@ -116,17 +139,18 @@ test("translate orchestrates the documented Koharu API and emits immutable artif
       psd: false,
       fetchImpl,
       logger: silentLogger,
-      readSystemMemory: async () => ({ totalPhysicalMiB: 16_000, availablePhysicalMiB: 2_000, commitHeadroomMiB: 20_000 }),
+      readSystemMemory: async () => { memoryRead = true; return { totalPhysicalMiB: 16_000, availablePhysicalMiB: 2_000, commitHeadroomMiB: 20_000 }; },
     }),
-    (error: unknown) => (error as { code?: string }).code === "PHYSICAL_MEMORY_LOW",
+    (error: unknown) => (error as { code?: string }).code === "KOHARU_SAFE_SOURCE_TEXT_WRITEBACK_UNAVAILABLE",
   );
-  assert.equal(operationIndex, operationsBeforeLowMemory);
+  assert.equal(memoryRead, false);
+  assert.equal(operationIndex, 0);
 });
 
 test("translate refuses a remote Koharu even when remote diagnostics are configured", async () => {
   const config = { ...DEFAULT_CONFIG, koharu: { ...DEFAULT_CONFIG.koharu, baseUrl: "https://koharu.example/api/v1", allowRemote: true } };
   await assert.rejects(
     () => runTranslate(config, { inputPath: "unused", outputParent: "unused", allowCloud: false, psd: false }),
-    (error: unknown) => (error as { code?: string }).code === "REMOTE_KOHARU_IMAGE_UPLOAD_FORBIDDEN",
+    (error: unknown) => (error as { code?: string }).code === "KOHARU_SAFE_SOURCE_TEXT_WRITEBACK_UNAVAILABLE",
   );
 });

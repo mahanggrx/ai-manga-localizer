@@ -3,12 +3,12 @@ import { LocalizerError } from "./errors.ts";
 import { sha256Bytes } from "./file-utils.ts";
 import {
   evaluateOcrBaseline,
-  normalizeOcrText,
   type OcrBenchmarkCandidate,
   type OcrBenchmarkInput,
   type OcrBenchmarkRegion,
   type OcrBenchmarkReport,
 } from "./ocr-benchmark.ts";
+import { inspectOcrText, normalizeOcrText, type OcrHardSafetyReason } from "./ocr-safety.ts";
 import {
   evaluateRoutingRegression,
   type RoutingRegressionInput,
@@ -17,7 +17,7 @@ import {
 
 export type OcrArbitrationPolicy = "always-paddle" | "always-manga" | "agreement-category" | "agreement-category-bubble";
 export type BubbleRelation = "bubble-contained" | "bubble-external";
-export type HardCandidateAnomaly = "candidate-missing" | "normalized-empty" | "replacement-character" | "unpaired-surrogate" | "forbidden-control" | "bidi-control";
+export type HardCandidateAnomaly = OcrHardSafetyReason;
 
 export interface OcrArbitrationSourcePin {
   sha256: string;
@@ -230,8 +230,6 @@ const SOURCE_FIELDS = new Set(["benchmarkInput", "baselineReport", "routingObser
 const PIN_FIELDS = new Set(["sha256", "byteLength"]);
 const ENGINE_FIELDS = new Set(["paddle", "manga"]);
 const BOOTSTRAP_FIELDS = new Set(["seed", "replicates", "confidenceLevel"]);
-const FORBIDDEN_CONTROL = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/u;
-const BIDI_CONTROL = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/u;
 
 function invalid(message: string): never {
   throw new LocalizerError("OCR_ARBITRATION_CONTRACT_INVALID", message);
@@ -326,28 +324,9 @@ function assertPinned(bytes: Uint8Array, pin: OcrArbitrationSourcePin, label: st
   if (bytes.byteLength !== pin.byteLength || sha256Bytes(bytes) !== pin.sha256) invalid(`${label} does not match its fixed SHA-256 and byte length`);
 }
 
-function hasUnpairedSurrogate(text: string): boolean {
-  for (let index = 0; index < text.length; index += 1) {
-    const code = text.charCodeAt(index);
-    if (code >= 0xd800 && code <= 0xdbff) {
-      const next = text.charCodeAt(index + 1);
-      if (!(next >= 0xdc00 && next <= 0xdfff)) return true;
-      index += 1;
-    } else if (code >= 0xdc00 && code <= 0xdfff) return true;
-  }
-  return false;
-}
-
 export function inspectOcrCandidate(candidate: OcrBenchmarkCandidate | undefined): CandidateState {
-  if (!candidate) return { normalized: "", hardReasons: ["candidate-missing"], safe: false };
-  const hardReasons: HardCandidateAnomaly[] = [];
-  if (hasUnpairedSurrogate(candidate.text)) hardReasons.push("unpaired-surrogate");
-  if (candidate.text.includes("\ufffd")) hardReasons.push("replacement-character");
-  if (FORBIDDEN_CONTROL.test(candidate.text)) hardReasons.push("forbidden-control");
-  if (BIDI_CONTROL.test(candidate.text)) hardReasons.push("bidi-control");
-  const normalized = normalizeOcrText(candidate.text);
-  if (normalized.length === 0) hardReasons.push("normalized-empty");
-  return { candidate, normalized, hardReasons, safe: hardReasons.length === 0 };
+  const inspected = inspectOcrText(candidate?.text);
+  return { ...(candidate ? { candidate } : {}), normalized: inspected.normalized, hardReasons: inspected.hardReasons, safe: inspected.safe };
 }
 
 function editDistanceNormalized(left: string, right: string): number {

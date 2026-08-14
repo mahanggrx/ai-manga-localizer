@@ -1,8 +1,22 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { LocalizerError } from "./errors.ts";
+import { assertSceneSnapshot } from "./scene-integrity.ts";
 import { parseSseStream } from "./sse.ts";
 import type { SafeLogger } from "./logger.ts";
-import type { InputImage, JsonObject, JsonValue, KoharuMeta, LlmTarget, LocalizerConfig, PipelineRunRequest } from "./types.ts";
+import type {
+  InputImage,
+  JsonObject,
+  JsonValue,
+  KoharuMeta,
+  KoharuOperationSnapshot,
+  KoharuProjectIdentity,
+  KoharuProjectsSnapshot,
+  KoharuSceneSnapshot,
+  KoharuSourceTextPatch,
+  LlmTarget,
+  LocalizerConfig,
+  PipelineRunRequest,
+} from "./types.ts";
 
 type FetchLike = typeof fetch;
 
@@ -15,6 +29,7 @@ interface KoharuClientOptions {
   logger?: SafeLogger;
   blobMaxBytes?: number;
   blobTimeoutMs?: number;
+  ownedMutationGuard?: () => Promise<void>;
 }
 
 function isLoopback(hostname: string): boolean {
@@ -68,6 +83,8 @@ export class KoharuClient {
   private readonly logger?: SafeLogger;
   private readonly blobMaxBytes: number;
   private readonly blobTimeoutMs: number;
+  private readonly ownedMode: boolean;
+  private readonly ownedMutationGuard?: () => Promise<void>;
 
   constructor(config: LocalizerConfig["koharu"], options?: KoharuClientOptions) {
     this.baseUrl = new URL(config.baseUrl.endsWith("/") ? config.baseUrl : `${config.baseUrl}/`);
@@ -80,8 +97,17 @@ export class KoharuClient {
     this.logger = options?.logger;
     this.blobMaxBytes = options?.blobMaxBytes ?? KOHARU_BLOB_MAX_BYTES;
     this.blobTimeoutMs = options?.blobTimeoutMs ?? Math.min(config.requestTimeoutMs, KOHARU_BLOB_TIMEOUT_MS);
+    this.ownedMode = config.mode === "owned";
+    this.ownedMutationGuard = options?.ownedMutationGuard;
     if (!Number.isSafeInteger(this.blobMaxBytes) || this.blobMaxBytes < 1) throw new LocalizerError("KOHARU_BLOB_LIMIT_INVALID", "Koharu blob byte limit must be a positive safe integer");
     if (!Number.isSafeInteger(this.blobTimeoutMs) || this.blobTimeoutMs < 1) throw new LocalizerError("KOHARU_BLOB_TIMEOUT_INVALID", "Koharu blob timeout must be a positive safe integer");
+  }
+
+  private async assertOwnedMutation(): Promise<void> {
+    if (!this.ownedMode || !this.ownedMutationGuard) {
+      throw new LocalizerError("KOHARU_SAFE_SOURCE_TEXT_WRITEBACK_UNAVAILABLE", "Koharu mutation requires a verified runner-owned process");
+    }
+    await this.ownedMutationGuard();
   }
 
   private async request(path: string, init: RequestInit = {}, timeoutMs = this.requestTimeoutMs): Promise<Response> {
@@ -126,8 +152,23 @@ export class KoharuClient {
 
   async getEngines(): Promise<JsonValue> { return await this.json<JsonValue>("engines"); }
   async getConfig(): Promise<JsonObject> { return await this.json<JsonObject>("config"); }
-  async getScene(): Promise<JsonObject> { return await this.json<JsonObject>("scene.json"); }
+  async getSceneSnapshot(): Promise<KoharuSceneSnapshot> {
+    const snapshot = await this.json<unknown>("scene.json");
+    assertSceneSnapshot(snapshot);
+    return snapshot;
+  }
+  async getScene(): Promise<JsonObject> { return (await this.getSceneSnapshot()).scene; }
   async getOperations(): Promise<JsonValue> { return await this.json<JsonValue>("operations"); }
+  async getOperationSnapshot(): Promise<KoharuOperationSnapshot> {
+    const snapshot = await this.getOperations();
+    const operations = Array.isArray(snapshot)
+      ? snapshot
+      : snapshot && typeof snapshot === "object" && Array.isArray(snapshot.operations)
+        ? snapshot.operations
+        : undefined;
+    if (!operations) throw new LocalizerError("KOHARU_OPERATIONS_INVALID", "Koharu /operations response has no operation array");
+    return { operations };
+  }
 
   async readBlob(hash: string): Promise<Uint8Array> {
     if (!/^[0-9a-f]{64}$/.test(hash)) throw new LocalizerError("KOHARU_BLOB_HASH_INVALID", "Koharu blob hash is invalid");
@@ -198,21 +239,79 @@ export class KoharuClient {
     }
   }
 
-  async createProject(name: string): Promise<JsonObject> {
-    return await this.json<JsonObject>("projects", {
+  async createProject(name: string): Promise<KoharuProjectIdentity> {
+    await this.assertOwnedMutation();
+    const response = await this.json<JsonObject>("projects", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ name }),
     });
+    const project = response.project && typeof response.project === "object" && !Array.isArray(response.project) ? response.project : response;
+    if (typeof project.id !== "string" || project.id.length === 0) throw new LocalizerError("KOHARU_PROJECT_ID_MISSING", "Koharu project creation response has no project id");
+    return {
+      id: project.id,
+      ...(typeof project.name === "string" ? { name: project.name } : {}),
+      ...(typeof project.path === "string" ? { path: project.path } : {}),
+    };
+  }
+
+  async listProjects(): Promise<KoharuProjectsSnapshot> {
+    const response = await this.json<JsonValue>("projects");
+    const projects = Array.isArray(response)
+      ? response
+      : response && typeof response === "object" && Array.isArray(response.projects)
+        ? response.projects
+        : undefined;
+    if (!projects) throw new LocalizerError("KOHARU_PROJECTS_INVALID", "Koharu projects response has no project array");
+    return {
+      projects: projects.map((item) => {
+        if (!item || typeof item !== "object" || Array.isArray(item) || typeof item.id !== "string" || item.id.length === 0) {
+          throw new LocalizerError("KOHARU_PROJECTS_INVALID", "Koharu projects response contains an invalid project identity");
+        }
+        return {
+          id: item.id,
+          ...(typeof item.name === "string" ? { name: item.name } : {}),
+          ...(typeof item.path === "string" ? { path: item.path } : {}),
+        };
+      }),
+    };
   }
 
   async uploadPages(images: InputImage[]): Promise<JsonValue> {
+    await this.assertOwnedMutation();
     const form = new FormData();
     for (const image of images) form.append("files", new Blob([image.bytes], { type: image.mediaType }), image.fileName);
     return await this.json<JsonValue>("pages", { method: "POST", body: form });
   }
 
+  async applySourceTextBatch(observedEpoch: number, patches: KoharuSourceTextPatch[], label: string): Promise<{ epoch: number }> {
+    await this.assertOwnedMutation();
+    if (!Number.isSafeInteger(observedEpoch) || observedEpoch < 0) throw new LocalizerError("KOHARU_EPOCH_INVALID", "History apply requires a locally observed non-negative safe epoch");
+    if (patches.length === 0) throw new LocalizerError("KOHARU_HISTORY_BATCH_EMPTY", "History Batch must contain at least one source-text patch");
+    // Koharu 0.61.2 accepts an Op directly and has no expected-epoch field.
+    // observedEpoch is intentionally local evidence, never represented as CAS.
+    const response = await this.json<JsonObject>("history/apply", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        batch: {
+          label,
+          ops: patches.map((patch) => ({
+            updateNode: {
+              page: patch.pageId,
+              id: patch.nodeId,
+              patch: { data: { text: { text: patch.sourceText } } },
+            },
+          })),
+        },
+      }),
+    });
+    if (!Number.isSafeInteger(response.epoch) || Number(response.epoch) < 0) throw new LocalizerError("KOHARU_HISTORY_RESPONSE_INVALID", "Koharu history response has no valid epoch");
+    return { epoch: Number(response.epoch) };
+  }
+
   async loadLlm(target: LlmTarget): Promise<void> {
+    await this.assertOwnedMutation();
     const { options, ...targetIdentity } = target;
     await this.request("llm/current", {
       method: "PUT",
@@ -221,7 +320,7 @@ export class KoharuClient {
     });
   }
 
-  async unloadLlm(): Promise<void> { await this.request("llm/current", { method: "DELETE" }); }
+  async unloadLlm(): Promise<void> { await this.assertOwnedMutation(); await this.request("llm/current", { method: "DELETE" }); }
 
   async getLlmState(): Promise<JsonValue> { return await this.json<JsonValue>("llm/current"); }
 
@@ -238,6 +337,7 @@ export class KoharuClient {
   }
 
   async startPipeline(request: PipelineRunRequest): Promise<string> {
+    await this.assertOwnedMutation();
     if (request.steps.length === 0) throw new LocalizerError("PIPELINE_EMPTY", "Pipeline must contain at least one engine id");
     const result = await this.json<Record<string, unknown>>("pipelines", {
       method: "POST",
@@ -316,6 +416,7 @@ export class KoharuClient {
   }
 
   async exportProject(format: "khr" | "psd" | "rendered" | "inpainted", pages?: string[]): Promise<{ bytes: Uint8Array; contentType: string }> {
+    await this.assertOwnedMutation();
     const response = await this.request("projects/current/export", {
       method: "POST",
       headers: { "content-type": "application/json" },

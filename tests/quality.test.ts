@@ -63,7 +63,7 @@ test("scene extractor supports Koharu 0.61.2 object maps and kind.text nodes", (
   assert.equal(regions[0].id, "region-uuid");
   assert.equal(regions[0].pageId, "page-uuid");
   assert.equal(regions[0].translatedText, "你好！");
-  assert.equal(regions[0].ocrConfidence, 0.97);
+  assert.equal(regions[0].ocrCandidates[0].confidence, 0.97);
   assert.deepEqual(regions[0].bbox, { x: 20, y: 30, width: 200, height: 100 });
 });
 
@@ -85,8 +85,7 @@ test("quality rules detect refusal, kana leakage, missing tokens, and low OCR", 
     policy: "replace",
     sourceText: "テスト123！",
     translatedText: "抱歉，我无法翻译テスト",
-    ocrConfidence: 0.2,
-    ocrCandidates: [],
+    ocrCandidates: [{ engine: "paddle", role: "paddle", status: "present", text: "テスト123！", confidence: 0.2, selected: true, selectionReason: "primary-engine-output" }],
     translationCandidates: [],
     qaFlags: [],
   };
@@ -116,8 +115,8 @@ test("roles require native evidence or a high-confidence bubble mask", () => {
 test("pure OCR warnings do not trigger a cloud translation retry", () => {
   const region: RegionRecord = {
     schemaVersion: 1, id: "r1", pageId: "p1", order: 0, role: "dialogue", policy: "replace",
-    sourceText: "こんにちは", translatedText: "你好", ocrConfidence: 0.1,
-    ocrCandidates: [], translationCandidates: [], qaFlags: [],
+    sourceText: "こんにちは", translatedText: "你好",
+    ocrCandidates: [{ engine: "paddle", role: "paddle", status: "present", text: "こんにちは", confidence: 0.1, selected: true, selectionReason: "primary-engine-output" }], translationCandidates: [], qaFlags: [],
   };
   const assessed = applyChapterQa([region], DEFAULT_CONFIG.quality);
   assert.ok(assessed[0].qaFlags.some((flag) => flag.code === "LOW_OCR_CONFIDENCE"));

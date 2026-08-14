@@ -1,5 +1,7 @@
 import { sha256Bytes } from "./file-utils.ts";
 import { LocalizerError } from "./errors.ts";
+export { normalizeOcrText } from "./ocr-safety.ts";
+import { normalizeOcrText } from "./ocr-safety.ts";
 
 export type OcrDetectionStatus = "detected" | "missed";
 export type OcrScoringEligibility = "eligible" | "excluded";
@@ -339,10 +341,6 @@ export function deriveOcrBenchmarkInput(baseBytes: Uint8Array, overlayBytes: Uin
     },
     regions,
   };
-}
-
-export function normalizeOcrText(text: string): string {
-  return text.normalize("NFKC").replace(/\s+/gu, "");
 }
 
 function editDistance(leftText: string, rightText: string): number {

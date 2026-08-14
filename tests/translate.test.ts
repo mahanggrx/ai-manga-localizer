@@ -4,13 +4,22 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DEFAULT_CONFIG } from "../src/config.ts";
-import { carryOcrProvenance, reassembleRenderedPages, runTranslate } from "../src/translate.ts";
+import { carryOcrProvenance, ownedRendererPipelineRequest, reassembleRenderedPages, runTranslate } from "../src/translate.ts";
 import type { InputImage, RegionRecord } from "../src/types.ts";
 import type { SafeLogger } from "../src/logger.ts";
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4, 5, 6, 7, 8]);
 const silentLogger: SafeLogger = { info() {}, warn() {}, error() {} };
 const healthyMemory = async () => ({ totalPhysicalMiB: 16_000, availablePhysicalMiB: 6_000, committedMiB: 20_000, commitLimitMiB: 40_000, commitHeadroomMiB: 20_000 });
+
+test("owned renderer request freezes the explicit defaultFont value", () => {
+  assert.deepEqual(ownedRendererPipelineRequest("renderer", ["p1", "p2"], "Synthetic Sans"), {
+    steps: ["renderer"],
+    pages: ["p1", "p2"],
+    defaultFont: "Synthetic Sans",
+  });
+  assert.throws(() => ownedRendererPipelineRequest("renderer", ["p1"], ""), (error: unknown) => (error as { code?: string }).code === "OWNED_DEFAULT_FONT_MISSING");
+});
 
 test("rendered page assembly preserves blocked pages in original order", () => {
   const source = (fileName: string, marker: number): InputImage => ({

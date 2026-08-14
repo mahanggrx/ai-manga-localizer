@@ -29,6 +29,8 @@ class FakeProcessPlatform implements OwnedProcessPlatform {
   spawn(_executablePath: string, args: string[], options: { env: NodeJS.ProcessEnv }) {
     assert.deepEqual(args, ["--port", "4042", "--headless"]);
     assert.ok(options.env.KOHARU_DATA_ROOT);
+    assert.equal(options.env.HF_HUB_OFFLINE, "1");
+    assert.equal(options.env.TRANSFORMERS_OFFLINE, "1");
     return this.child;
   }
   async inspectProcess() { return this.process; }
@@ -46,7 +48,14 @@ async function startedProcess(): Promise<{ manager: OwnedKoharuProcess; platform
   const platform = new FakeProcessPlatform();
   platform.process.executablePath = executable;
   const manager = await OwnedKoharuProcess.start({
-    executablePath: executable, host: "127.0.0.1", port: 4042, dataRoot, platform, identityAttempts: 1, identityDelayMs: 0,
+    executablePath: executable,
+    host: "127.0.0.1",
+    port: 4042,
+    dataRoot,
+    environment: { HF_HUB_OFFLINE: "1", TRANSFORMERS_OFFLINE: "1" },
+    platform,
+    identityAttempts: 1,
+    identityDelayMs: 0,
   });
   return { manager, platform, root };
 }
@@ -131,7 +140,6 @@ test("shadow cache copies locked bytes, permits only internal hardlinks, and det
     shadowRoot,
     allowedBoundary: root,
     appDataModelRoots: [sourceRoot],
-    manifestPath: path.join(root, "shadow-manifest.json"),
     files: [
       { path: path.join("blobs", "model.bin"), sourcePath: source, size: bytes.length, sha256 },
       { path: path.join("snapshots", "locked", "model.bin"), size: bytes.length, sha256, hardlinkTo: path.join("blobs", "model.bin") },

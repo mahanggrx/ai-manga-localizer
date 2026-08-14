@@ -251,12 +251,16 @@ test("0.61.2 scene, project, operation, Batch, and textNodeIds contracts are typ
   assert.deepEqual((await client.listProjects()).projects.map((project) => project.id), ["project-1"]);
   assert.deepEqual(await client.applySourceTextBatch(4, [{ pageId: "p1", nodeId: "r1", sourceText: "private-source" }], "selected OCR"), { epoch: 5 });
   assert.equal(await client.startPipeline({ steps: ["translator"], pages: ["p1"], textNodeIds: ["r1"] }), "op-text");
+  assert.equal(await client.startPipeline({ steps: ["renderer"], pages: ["p1"], defaultFont: "Synthetic Sans" }), "op-text");
   const history = requests.find((request) => request.path.endsWith("/history/apply"));
   assert.deepEqual(history?.body, {
     batch: { label: "selected OCR", ops: [{ updateNode: { page: "p1", id: "r1", patch: { data: { text: { text: "private-source" } } } } }] },
   });
-  const pipeline = requests.find((request) => request.path.endsWith("/pipelines"));
-  assert.deepEqual(pipeline?.body, { steps: ["translator"], pages: ["p1"], textNodeIds: ["r1"] });
+  const pipelines = requests.filter((request) => request.path.endsWith("/pipelines"));
+  assert.deepEqual(pipelines.map((request) => request.body), [
+    { steps: ["translator"], pages: ["p1"], textNodeIds: ["r1"] },
+    { steps: ["renderer"], pages: ["p1"], defaultFont: "Synthetic Sans" },
+  ]);
 });
 
 test("external client mutation APIs fail before network access", async () => {

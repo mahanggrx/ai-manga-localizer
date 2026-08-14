@@ -128,6 +128,7 @@ export class OwnedKoharuProcess {
     host: "127.0.0.1" | "::1";
     port: number;
     dataRoot: string;
+    environment?: NodeJS.ProcessEnv;
     platform?: OwnedProcessPlatform;
     identityAttempts?: number;
     identityDelayMs?: number;
@@ -141,7 +142,7 @@ export class OwnedKoharuProcess {
     const executableSha256 = await platform.sha256File(executablePath);
     const dataRoot = path.resolve(options.dataRoot);
     const child = platform.spawn(executablePath, ["--port", String(options.port), "--headless"], {
-      env: { ...process.env, KOHARU_DATA_ROOT: dataRoot },
+      env: { ...process.env, ...options.environment, KOHARU_DATA_ROOT: dataRoot },
     });
     const attempts = options.identityAttempts ?? 40;
     const delayMs = options.identityDelayMs ?? 250;

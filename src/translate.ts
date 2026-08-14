@@ -11,14 +11,15 @@ import { assertLocalTranslationTarget } from "./local-translation.ts";
 import { logger, type SafeLogger } from "./logger.ts";
 import { applyOcrRuntimeDecisions, applyOcrRuntimePolicy, extractOcrRuntimeRegions, type OcrRuntimePass } from "./ocr-runtime-policy.ts";
 import { OwnedKoharuProcess, createOwnedRunLayout, type OwnedProcessPlatform, type OwnedRunLayout } from "./owned-koharu-process.ts";
+import { stageOwnedRuntime, type OwnedRuntimeStageRecord } from "./owned-runtime-staging.ts";
 import { applyChapterQa, buildGlossaryPrompt, deriveGlossary, extractPageIds, extractRegionsFromScene, markRenderBlockedPages, qaSummary, renderProtectionPlan, translationRetryPages } from "./quality.ts";
 import { OwnedProjectGuard } from "./run-ownership.ts";
 import { assertSchema } from "./schema.ts";
 import { applyOwnedScenePatch, DurablePrivateJournal, readStableScene, runOwnedTranslator } from "./scene-patch.ts";
 import { sceneFullHash } from "./scene-integrity.ts";
-import { cleanupOwnedCacheLinks, createOwnedRunCacheLink, loadAndValidateShadowCache, type OwnedCacheLink } from "./shadow-model-cache.ts";
+import { cleanupOwnedCacheLinks, createOwnedRunCacheLink, loadAndValidateShadowCache, type OwnedCacheLink, type ShadowCacheManifest } from "./shadow-model-cache.ts";
 import { assessResourceHeadroom, readSystemMemorySnapshot, type SystemMemorySnapshot } from "./system-resources.ts";
-import type { ChapterManifest, InputImage, JsonObject, JsonValue, LocalizerConfig, RegionRecord, RunReport, StageReport } from "./types.ts";
+import type { ChapterManifest, InputImage, JsonObject, JsonValue, LocalizerConfig, PipelineRunRequest, RegionRecord, RunReport, StageReport } from "./types.ts";
 
 export interface TranslateOptions {
   inputPath: string;
@@ -39,6 +40,11 @@ interface PipelineEngines {
   inpainter: string;
   fallbackInpainter?: string;
   renderer: string;
+}
+
+export function ownedRendererPipelineRequest(renderer: string, pages: string[], defaultFont: string): PipelineRunRequest {
+  if (!renderer || pages.length === 0 || !defaultFont) throw new LocalizerError("OWNED_DEFAULT_FONT_MISSING", "Owned renderer requires a non-empty engine, page population, and frozen defaultFont request value");
+  return { steps: [renderer], pages, defaultFont };
 }
 
 function unique(values: Array<string | undefined>): string[] {
@@ -248,9 +254,11 @@ export async function runTranslate(config: LocalizerConfig, options: TranslateOp
   let client: KoharuClient | undefined;
   let ownedProcess: OwnedKoharuProcess | undefined;
   let ownedLayout: OwnedRunLayout | undefined;
+  let ownedRuntime: OwnedRuntimeStageRecord | undefined;
   let ownedLink: OwnedCacheLink | undefined;
   let ownedStartAttempted = false;
   let shadowManifestHash: string | undefined;
+  let shadowManifest: ShadowCacheManifest | undefined;
   let projectGuard: OwnedProjectGuard | undefined;
   let journal: DurablePrivateJournal | undefined;
   const privateRuntime = path.join(output.directory, "private-runtime");
@@ -261,27 +269,33 @@ export async function runTranslate(config: LocalizerConfig, options: TranslateOp
   let bubbleEvidence: BubbleMaskEvidence | undefined;
   try {
     await mkdir(privateRuntime, { recursive: false, mode: 0o700 });
-    await executeStage(report, checkpoints, "verify-shadow-model-cache", async () => {
+    await executeStage(report, checkpoints, "verify-composite-shadow", async () => {
       const verified = await loadAndValidateShadowCache(ownedConfig.shadowCacheRoot, ownedConfig.shadowCacheManifest);
       shadowManifestHash = verified.manifestHash;
+      shadowManifest = verified.manifest;
       return verified;
     });
     await executeStage(report, checkpoints, "start-owned-koharu", async () => {
       ownedLayout = await createOwnedRunLayout(ownedConfig.allowedRunRoot, output.directory);
+      if (!shadowManifest) throw new LocalizerError("SHADOW_CACHE_MANIFEST_INVALID", "Composite shadow manifest was not retained after verification");
+      ownedRuntime = await stageOwnedRuntime({ owned: ownedConfig, layout: ownedLayout, manifest: shadowManifest });
+      await writeJsonExclusive(path.join(privateRuntime, "owned-runtime-stage.private.json"), ownedRuntime);
+      const modelShadowRoot = path.join(ownedConfig.shadowCacheRoot, ownedConfig.modelCache.shadowRelativePath);
       ownedLink = await createOwnedRunCacheLink({
         runRoot: ownedLayout.root,
         linkPath: ownedLayout.modelLink,
-        shadowRoot: ownedConfig.shadowCacheRoot,
+        shadowRoot: modelShadowRoot,
         appDataModelRoots: ownedConfig.appDataModelRoots,
       });
       const linkedShadow = await loadAndValidateShadowCache(ownedConfig.shadowCacheRoot, ownedConfig.shadowCacheManifest);
       if (linkedShadow.manifestHash !== shadowManifestHash) throw new LocalizerError("SHADOW_CACHE_REBUILD_REQUIRED", "Shadow cache changed between preflight verification and owned-process start");
       ownedStartAttempted = true;
       ownedProcess = await OwnedKoharuProcess.start({
-        executablePath: ownedConfig.executablePath,
+        executablePath: ownedRuntime.executablePath,
         host: ownedConfig.host,
         port: ownedConfig.port,
         dataRoot: ownedLayout.dataRoot,
+        environment: ownedRuntime.offlineEnvironment,
         platform: options.ownedProcessPlatform,
       });
       await ownedProcess.writeIdentity(path.join(privateRuntime, "owned-process.private.json"));
@@ -456,7 +470,8 @@ export async function runTranslate(config: LocalizerConfig, options: TranslateOp
         return;
       }
       await guard.assertProjectIdentity();
-      const run = await ownedClient.runPipeline({ steps: [pipeline.renderer], pages: renderPages });
+      if (!ownedRuntime) throw new LocalizerError("OWNED_DEFAULT_FONT_MISSING", "Owned renderer defaultFont was not staged and verified");
+      const run = await ownedClient.runPipeline(ownedRendererPipelineRequest(pipeline.renderer, renderPages, ownedRuntime.defaultFont.requestValue));
       item.warnings.push(...run.warnings.map(() => "KOHARU_PIPELINE_WARNING"));
     });
 

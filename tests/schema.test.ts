@@ -102,13 +102,25 @@ test("config rejects overlapping sparse and dense structural thresholds", async 
 test("owned Koharu config is conditional and private runtime records are versioned", async () => {
   const schema = await loadSchema("localizer-config.schema.json");
   const ownedProcess = {
-    executablePath: "C:/tools/koharu.exe",
     host: "127.0.0.1" as const,
     port: 4042,
     allowedRunRoot: "C:/runs",
-    shadowCacheRoot: "C:/runs/shadow-model-cache",
-    shadowCacheManifest: "C:/runs/shadow-model-cache.json",
+    shadowCacheRoot: "C:/runs/composite-shadow",
+    shadowCacheManifest: "C:/runs/composite-shadow-manifest.json",
     appDataModelRoots: ["C:/Users/example/AppData/Roaming/Koharu/models"],
+    dataRootRelativePath: "owned-koharu/data",
+    executable: { shadowRelativePath: "bin/koharu.exe", dataRelativePath: "runtime/bin/koharu.exe", size: 3, sha256: "a".repeat(64) },
+    runtime: { shadowRelativePath: "runtime", dataRelativePath: "runtime" },
+    config: { shadowRelativePath: "config/owned.toml", dataRelativePath: "config.toml", size: 3, sha256: "b".repeat(64) },
+    modelCache: { shadowRelativePath: "models/huggingface", dataRelativePath: "models/huggingface" },
+    offline: { enabled: true as const, allowDownloads: false as const },
+    rendererDefaultFont: {
+      requestValue: "Synthetic Sans",
+      shadowRelativePath: "fonts/SyntheticSans.ttf",
+      dataRelativePath: "fonts/SyntheticSans.ttf",
+      size: 3,
+      sha256: "c".repeat(64),
+    },
   };
   const owned = { ...DEFAULT_CONFIG, koharu: { ...DEFAULT_CONFIG.koharu, mode: "owned", baseUrl: "http://127.0.0.1:4042/api/v1", ownedProcess } };
   assert.deepEqual(validateSchema(owned, schema), []);
@@ -117,10 +129,15 @@ test("owned Koharu config is conditional and private runtime records are version
   assert.throws(() => assertOwnedKoharuRuntimeConfig({ ...owned.koharu, baseUrl: "http://user:secret@127.0.0.1:4042/api/v1" }), (error: unknown) => (error as { code?: string }).code === "CONFIG_OWNED_KOHARU_ADDRESS_MISMATCH");
   assert.ok(validateSchema({ ...DEFAULT_CONFIG, koharu: { ...DEFAULT_CONFIG.koharu, mode: "owned" } }, schema).some((error) => error.includes("ownedProcess")));
   assert.ok(validateSchema({ ...DEFAULT_CONFIG, koharu: { ...DEFAULT_CONFIG.koharu, ownedProcess } }, schema).some((error) => error.includes("forbidden")));
+  assert.ok(validateSchema({ ...owned, koharu: { ...owned.koharu, ownedProcess: { ...ownedProcess, offline: { enabled: false, allowDownloads: false } } } }, schema).some((error) => error.includes("must equal true")));
+  assert.ok(validateSchema({ ...owned, koharu: { ...owned.koharu, ownedProcess: { ...ownedProcess, rendererDefaultFont: { ...ownedProcess.rendererDefaultFont, shadowRelativePath: "../font.ttf" } } } }, schema).some((error) => error.includes("pattern mismatch")));
   await assert.doesNotReject(() => assertSchema("shadow-cache-manifest.schema.json", {
     schemaVersion: 1,
     files: [{ path: "blobs/model.bin", size: 3, sha256: "a".repeat(64) }],
   }));
+  const shadowSchema = await loadSchema("shadow-cache-manifest.schema.json");
+  assert.ok(validateSchema({ schemaVersion: 1, files: [] }, shadowSchema).some((error) => error.includes("too few items")));
+  assert.ok(validateSchema({ schemaVersion: 1, files: [{ path: "../escape", size: 3, sha256: "a".repeat(64) }] }, shadowSchema).some((error) => error.includes("pattern mismatch")));
   await assert.doesNotReject(() => assertSchema("owned-runtime-journal-entry.schema.json", {
     schemaVersion: 1, sequence: 0, phase: "PREPARED", recordedAt: new Date(0).toISOString(), epoch: 0, fullHash: "b".repeat(64), count: 1,
   }));

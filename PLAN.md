@@ -270,7 +270,7 @@ Estimated work: one targeted visual role check.
 
 ### M3 — OCR arbitration
 
-Status: **M3.8 category-free runtime policy and owned-process single-writer closure implemented in code and synthetic contracts; one real three-page Koharu smoke remains unexecuted**
+Status: **M3.9 composite shadow and owned runtime/config/font staging implemented in code and micro-fixture contracts; the real composite build and three-page Koharu smoke remain unexecuted**
 
 M3.1a evidence:
 
@@ -317,6 +317,18 @@ M3.8 runtime contract:
 - The model cache boundary uses a project-owned, rebuildable shadow copy. Locked source files are copied byte-for-byte with size and SHA-256 checks before and after copying; hardlinks are permitted only inside the shadow from blobs to snapshots. A run may link only to the verified shadow, never directly to an AppData cache, and the manifest is revalidated before and after the run. Mutation marks the shadow as requiring rebuild. Cleanup unlinks only exact links created by the run and never recursively enters a junction or other reparse point.
 - This boundary does not claim protection against a malicious local process running with the same user permissions. The remaining acceptance evidence is one authorized real three-page owned-process smoke; no real Koharu, model, GPU, or private-page execution is part of the synthetic implementation result.
 
+M3.9 preflight implementation:
+
+- the public builder accepts a generic complete-file manifest and never embeds private source paths or workstation hashes;
+- every content source is a regular non-reparse file and is checked by size and SHA-256 before copy, after copy, and at the destination;
+- the builder creates a unique sibling staging directory on the target volume, checks worst-case free space, permits hardlinks only between files inside that staging root, validates the full runtime/config/font/model population, and publishes with one non-overwriting directory rename;
+- failure cleanup visits only exact files and directories recorded by the current build in reverse order, refuses reparse points, and never recursively traverses a staging tree;
+- owned execution stages the executable, runtime subtree, rendered config, and pinned renderer font into the unique run data root; only the model-cache subtree may be exposed through the separately identity-checked run junction;
+- owned config explicitly freezes the run-relative data root, shadow and data-relative runtime/config/model/font paths, offline/no-download policy, and renderer `defaultFont` request value plus file size and SHA-256;
+- the renderer request carries the frozen `defaultFont`, while the complete composite manifest is revalidated before staging/start and after process stop;
+- micro-fixture tests cover success, source drift, partial copy, insufficient space, font drift, config drift, atomic publish conflict, and exact non-recursive cleanup without materializing the real dependency closure;
+- this is synthetic implementation evidence only. No real dependency copy, junction, Koharu process, model, GPU, network, or smoke execution is included.
+
 Goals:
 
 - retain PaddleOCR-VL and Manga OCR candidates;
@@ -326,7 +338,7 @@ Goals:
 - evaluate a manga-specialized Paddle candidate only on the same crops and only after separate download authorization;
 - keep translation disabled unless the owned-process identity, unique project, private patch journal, exact scene readback, epoch expectations, and translator postconditions are all active.
 
-Estimated work: one authorized three-page owned-process smoke, followed by review of its private journal and non-private structural evidence.
+Estimated work: one separately authorized real composite build, followed by one separately authorized three-page owned-process smoke and review of its private journal and non-private structural evidence.
 
 ### M4 — Controlled translation selection
 
@@ -431,6 +443,6 @@ The repository must not contain:
 
 ## Immediate next actions
 
-1. Visually spot-check the seven private role hard cases before considering an external-text classifier.
-2. Record only aggregate role conclusions in public artifacts; do not expose private case identifiers or content.
-3. Proceed to M3 OCR arbitration after the targeted role check; do not schedule detection-only or claim polygon validation.
+1. Review the M3.9 public diff and synthetic test evidence without changing the frozen private preflight artifacts.
+2. If approved separately, materialize the real composite shadow from the frozen private build input and verify its complete generated manifest; do not start Koharu in that authorization.
+3. Only after a successful reviewed build, request separate authorization for the frozen low-manual three-page lifecycle smoke.

@@ -87,6 +87,26 @@ export function assertOwnedKoharuRuntimeConfig(koharu: LocalizerConfig["koharu"]
     throw new LocalizerError("CONFIG_OWNED_KOHARU_ADDRESS_MISMATCH", "koharu.baseUrl must be the credential-free owned loopback HTTP /api/v1 address and port");
   }
   if (koharu.allowRemote) throw new LocalizerError("CONFIG_OWNED_KOHARU_REMOTE_INVALID", "owned Koharu mode cannot allow remote service addresses");
+  const safeRelative = (value: string): string => {
+    if (!value || path.isAbsolute(value) || value.includes(":")) throw new LocalizerError("CONFIG_OWNED_PATH_INVALID", "Owned runtime and shadow paths must be safe relative paths");
+    const normalized = path.normalize(value);
+    if (normalized === "." || normalized === ".." || normalized.startsWith(`..${path.sep}`)) throw new LocalizerError("CONFIG_OWNED_PATH_INVALID", "Owned runtime or shadow path escapes its configured root");
+    return normalized;
+  };
+  if (safeRelative(owned.dataRootRelativePath) !== path.join("owned-koharu", "data")) throw new LocalizerError("CONFIG_OWNED_DATA_ROOT_INVALID", "Owned data root must be explicitly frozen to the unique run-owned data directory");
+  if (safeRelative(owned.runtime.dataRelativePath) !== "runtime" || safeRelative(owned.config.dataRelativePath) !== "config.toml" || safeRelative(owned.modelCache.dataRelativePath) !== path.join("models", "huggingface")) {
+    throw new LocalizerError("CONFIG_OWNED_LAYOUT_INVALID", "Owned runtime, config, and model-cache destinations must stay inside the isolated data root");
+  }
+  if (!safeRelative(owned.executable.dataRelativePath).startsWith(`runtime${path.sep}`)) throw new LocalizerError("CONFIG_OWNED_EXECUTABLE_INVALID", "Owned executable must be staged under the owned runtime directory");
+  if (!safeRelative(owned.rendererDefaultFont.dataRelativePath).startsWith(`fonts${path.sep}`)) throw new LocalizerError("CONFIG_OWNED_FONT_INVALID", "Renderer defaultFont must be staged under the owned font directory");
+  for (const value of [
+    owned.executable.shadowRelativePath,
+    owned.runtime.shadowRelativePath,
+    owned.config.shadowRelativePath,
+    owned.modelCache.shadowRelativePath,
+    owned.rendererDefaultFont.shadowRelativePath,
+  ]) safeRelative(value);
+  if (!owned.offline.enabled || owned.offline.allowDownloads) throw new LocalizerError("CONFIG_OWNED_OFFLINE_INVALID", "Owned Koharu requires explicit offline/no-download policy");
 }
 
 export async function loadConfig(configPath?: string): Promise<LocalizerConfig> {

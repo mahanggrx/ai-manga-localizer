@@ -8,18 +8,26 @@
     "schemaVersion": { "const": 1 },
     "files": {
       "type": "array",
+      "minItems": 1,
       "items": {
         "type": "object",
         "required": ["path", "size", "sha256"],
         "properties": {
-          "path": { "type": "string", "minLength": 1 },
+          "path": { "$ref": "#/$defs/safeRelativePath" },
           "size": { "type": "integer", "minimum": 0 },
           "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-          "hardlinkTo": { "type": "string", "minLength": 1 }
+          "hardlinkTo": { "$ref": "#/$defs/safeRelativePath" }
         },
         "additionalProperties": false
       }
     }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "$defs": {
+    "safeRelativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?![A-Za-z]:)(?![/\\\\])(?!.*(^|[/\\\\])\\.\\.([/\\\\]|$))(?!.*:).+$"
+    }
+  }
 }

@@ -155,13 +155,44 @@ export interface LocalizerConfig {
     operationTimeoutMs: number;
     allowRemote: boolean;
     ownedProcess?: {
-      executablePath: string;
       host: "127.0.0.1" | "::1";
       port: number;
       allowedRunRoot: string;
       shadowCacheRoot: string;
       shadowCacheManifest: string;
       appDataModelRoots: string[];
+      dataRootRelativePath: string;
+      executable: {
+        shadowRelativePath: string;
+        dataRelativePath: string;
+        size: number;
+        sha256: string;
+      };
+      runtime: {
+        shadowRelativePath: string;
+        dataRelativePath: string;
+      };
+      config: {
+        shadowRelativePath: string;
+        dataRelativePath: string;
+        size: number;
+        sha256: string;
+      };
+      modelCache: {
+        shadowRelativePath: string;
+        dataRelativePath: string;
+      };
+      offline: {
+        enabled: true;
+        allowDownloads: false;
+      };
+      rendererDefaultFont: {
+        requestValue: string;
+        shadowRelativePath: string;
+        dataRelativePath: string;
+        size: number;
+        sha256: string;
+      };
     };
   };
   quality: {

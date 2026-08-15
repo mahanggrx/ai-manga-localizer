@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "translation-benchmark-input.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "benchmarkId", "source", "regions"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "benchmarkId": { "$ref": "#/$defs/safeIdentifier" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["review", "ocrOverlay"],
+      "properties": {
+        "review": { "$ref": "#/$defs/revisionPin" },
+        "ocrOverlay": { "$ref": "#/$defs/revisionPin" }
+      }
+    },
+    "regions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "pageId", "pageOrder", "regionOrder", "category", "lengthStratum", "translationEligibility", "nonRefusalRequired"],
+        "properties": {
+          "id": { "$ref": "#/$defs/safeIdentifier" },
+          "pageId": { "$ref": "#/$defs/safeIdentifier" },
+          "pageOrder": { "type": "integer", "minimum": 1 },
+          "regionOrder": { "type": "integer", "minimum": 0 },
+          "category": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+          "lengthStratum": { "enum": ["short", "medium", "long", "not-applicable"] },
+          "translationEligibility": { "enum": ["eligible", "excluded"] },
+          "exclusionReason": { "enum": ["detection-missed", "non-text-false-positive", "partial-glyph-bbox", "boundary-clipped"] },
+          "workingGoldOcr": { "type": "string", "minLength": 1 },
+          "nonRefusalRequired": { "type": "boolean" }
+        },
+        "if": { "properties": { "translationEligibility": { "const": "eligible" } } },
+        "then": {
+          "required": ["workingGoldOcr"],
+          "properties": { "lengthStratum": { "enum": ["short", "medium", "long"] } },
+          "not": { "required": ["exclusionReason"] }
+        },
+        "else": {
+          "required": ["exclusionReason"],
+          "properties": { "lengthStratum": { "const": "not-applicable" } },
+          "not": { "required": ["workingGoldOcr"] }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "safeIdentifier": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "revisionPin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "byteLength", "revision"],
+      "properties": {
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "byteLength": { "type": "integer", "minimum": 1 },
+        "revision": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

@@ -1,12 +1,12 @@
 # AI Manga Localizer — Project Plan
 
-Last updated: 2026-08-11
+Last updated: 2026-08-15
 
 ## Current phase
 
-The project is in **M2 Existing-data Routing Regression**.
+The project is in **M4.0/M4.1 Offline Translation Benchmark Contract**.
 
-The engineering skeleton and M1 bubble-mask adapter are established, several real local routes have been exercised, and a private 50-page AI-assisted `review-v5` set is available as a working gold set. M2 has completed both the offline bbox replay and a read-only live scene replay without rerunning detection, OCR, translation, or rendering. The Koharu 0.61.2 production route has no effective `linePolygons`, so polygon threshold validation is explicitly unavailable rather than represented by bbox fallback results.
+The engineering skeleton, M1 bubble-mask adapter, M2 routing regression, and category-free M3 OCR runtime contract are established. M3.10A has materialized and verified the real composite shadow. M3.10B resource-policy v2.1 is at `EXECUTABLE_NOT_RUN`; the real three-page owned-process smoke remains deliberately deferred. M4.0/M4.1 now provides a fixed-working-gold, versioned offline translation benchmark contract and a preregistered compact challenge, without starting Koharu, a model server, a model, or the GPU.
 
 This document is the public, repository-level source of truth for project direction. Private images, OCR text, translations, prompts, model files, and review data remain outside Git. Aggregate measurements may be recorded here when they do not expose private content.
 
@@ -50,7 +50,7 @@ The following evidence has been observed locally:
 - A three-page GPU safety regression verified successful rendering and byte-identical preservation of protected pages.
 - One 50-page Koharu candidate baseline completed with editable and rendered artifacts.
 - PaddleOCR-VL 1.6 and Manga OCR candidates were both captured for the baseline.
-- A Sakura-family model produced the only complete 50-page translation baseline so far.
+- A Sakura-family model produced the only complete 50-page historical E2E translation baseline so far; it used legacy OCR inputs and is not a fixed-working-gold OCR model score.
 - Murasaki-8B-v0.2 IQ4_XS has been tested through multiple integration routes, but no Murasaki route has yet produced a complete, competitive controlled baseline.
 - MangaTranslator integration can partially render pages, but current smoke results do not justify adopting it as the V1 chassis.
 - A real Koharu scene probe verified that speech-bubble segmentation is persisted as page-sized, integer-labelled `role=bubble` WebP masks.
@@ -63,10 +63,12 @@ The 50-page working-gold comparison currently shows:
 | --- | ---: |
 | Detection recall | 387 / 388 (99.74%) |
 | Selected OCR regions at CER <= 3% | 80.41% |
-| Semantically usable translations | 240 / 388 (61.86%) |
-| Layout pass | 271 / 388 (69.85%) |
+| Historical E2E semantic usability under mixed OCR inputs | 240 / 388 (61.86%) |
+| Historical E2E terminology correctness under mixed OCR inputs | 240 / 388 (61.86%) |
+| Historical E2E layout usability under mixed OCR inputs | 271 / 388 (69.85%) |
 | Strict no-edit pages | 3 / 50 (6%) |
 | Mean repair and lettering score | 2.84 / 5 |
+| Repair and lettering page-score distribution | 1: 3, 2: 11, 3: 27, 4: 9 |
 
 These are diagnostic measurements, not release claims.
 
@@ -270,7 +272,7 @@ Estimated work: one targeted visual role check.
 
 ### M3 — OCR arbitration
 
-Status: **M3.9 composite shadow and owned runtime/config/font staging implemented in code and micro-fixture contracts; the real composite build and three-page Koharu smoke remain unexecuted**
+Status: **M3.10A real composite shadow build verified; M3.10B resource-policy v2.1 is `EXECUTABLE_NOT_RUN`; the real three-page Koharu smoke is deferred**
 
 M3.1a evidence:
 
@@ -279,7 +281,7 @@ M3.1a evidence:
 - OCR scoring contains 384 eligible detected regions, excludes three detected structural or boundary cases, and has 383 regions with both retained candidates;
 - derived input and aggregate baseline report are private ignored artifacts; public schemas and synthetic fixtures contain no private manga text, page identifiers, or real region identifiers;
 - normalization is NFKC followed by whitespace removal; exact match and character edit distance use the normalized text, missing candidates remain explicit, and no cross-engine raw confidence is consumed;
-- M3.2 may implement offline comparison against this contract without rerunning a model. This does not authorize or claim a calibrated arbitration policy.
+- M3.2 implemented offline comparison against this contract without rerunning a model. It did not establish a calibrated arbitration policy.
 
 M3.2 outcome:
 
@@ -290,7 +292,7 @@ M3.2 outcome:
 - page-cluster bootstrap with seed 20260811 and 5,000 replicates found an exact-rate gain over Paddle of 9.90 percentage points with a 95% interval of 5.33 to 15.32 points, while the corpus-CER difference was 1.85 points with a 95% interval of -3.92 to 12.52 points and therefore crossed zero;
 - the bubble-aware fallback produced the same aggregate result as the category-only strategy under the predeclared support floor of five; no observation-driven threshold or extra rule was added;
 - one missing Paddle candidate and three normalized-agreement joint errors remain explicit QA residuals;
-- decision: **do not freeze either simple arbitration strategy**. Do not proceed to M4 on the basis of this result and do not add calibration, temporary heuristics, or a new OCR model without a separately authorized M3 follow-up.
+- decision: **do not freeze either simple arbitration strategy**. This result did not justify M4 by itself; the later category-free runtime policy and fail-closed source-text preconditions allow M4 translation benchmarking to proceed without claiming that an adaptive OCR selector was calibrated.
 
 M3.5–M3.7 decisions:
 
@@ -315,7 +317,7 @@ M3.8 runtime contract:
 - The first owned V1 closure performs one journaled translator pipeline. Existing local/cloud retry mutations are not silently reused because they would require separately journaled epoch and postcondition gates; retry-eligible pages remain explicit QA/render-preservation outcomes until that extension is designed.
 - The private journal records `PREPARED`, `PATCH_INTENT`, `PATCH_ACK`, `PATCH_VERIFIED`, `TRANSLATOR_INTENT`, `TRANSLATOR_STARTED`, `TRANSLATOR_FINISHED`, and `POST_TRANSLATOR_VERIFIED`. Its phase plus exact scene readback distinguishes patch-not-started, ambiguous or partial patch, patched-but-translator-not-started, and translator-finished-but-not-yet-verified recovery states without placing source text in ordinary logs.
 - The model cache boundary uses a project-owned, rebuildable shadow copy. Locked source files are copied byte-for-byte with size and SHA-256 checks before and after copying; hardlinks are permitted only inside the shadow from blobs to snapshots. A run may link only to the verified shadow, never directly to an AppData cache, and the manifest is revalidated before and after the run. Mutation marks the shadow as requiring rebuild. Cleanup unlinks only exact links created by the run and never recursively enters a junction or other reparse point.
-- This boundary does not claim protection against a malicious local process running with the same user permissions. The remaining acceptance evidence is one authorized real three-page owned-process smoke; no real Koharu, model, GPU, or private-page execution is part of the synthetic implementation result.
+- This boundary does not claim protection against a malicious local process running with the same user permissions. The real composite build is now verified, but the remaining owned-lifecycle acceptance evidence is still one separately authorized real three-page smoke.
 
 M3.9 preflight implementation:
 
@@ -327,7 +329,14 @@ M3.9 preflight implementation:
 - owned config explicitly freezes the run-relative data root, shadow and data-relative runtime/config/model/font paths, offline/no-download policy, and renderer `defaultFont` request value plus file size and SHA-256;
 - the renderer request carries the frozen `defaultFont`, while the complete composite manifest is revalidated before staging/start and after process stop;
 - micro-fixture tests cover success, source drift, partial copy, insufficient space, font drift, config drift, atomic publish conflict, and exact non-recursive cleanup without materializing the real dependency closure;
-- this is synthetic implementation evidence only. No real dependency copy, junction, Koharu process, model, GPU, network, or smoke execution is included.
+- these bullets describe the M3.9 synthetic implementation evidence. M3.10A subsequently supplied the real composite materialization evidence; it did not start Koharu, a model, the GPU, or the three-page smoke.
+
+M3.10A/M3.10B outcome:
+
+- the frozen composite shadow was materially built and its completion checks succeeded;
+- no private source path, workstation-specific hash, manga content, or prompt is recorded in this public plan;
+- resource-policy v2.1 has reached `EXECUTABLE_NOT_RUN`, which means the executable policy package is ready but no real lifecycle result is claimed;
+- the real three-page owned-process smoke remains deferred and is not implied by the successful composite build or resource-policy readiness state.
 
 Goals:
 
@@ -338,15 +347,30 @@ Goals:
 - evaluate a manga-specialized Paddle candidate only on the same crops and only after separate download authorization;
 - keep translation disabled unless the owned-process identity, unique project, private patch journal, exact scene readback, epoch expectations, and translator postconditions are all active.
 
-Estimated work: one separately authorized real composite build, followed by one separately authorized three-page owned-process smoke and review of its private journal and non-private structural evidence.
+Estimated work: one separately authorized three-page owned-process smoke and review of its private journal and non-private structural evidence; it is deferred while M4 text-only selection work proceeds independently.
 
 ### M4 — Controlled translation selection
 
-Status: **pending**
+Status: **M4.0/M4.1 contract, scorer, private derivation, challenge preregistration, and historical attribution report complete; controlled candidate runs not executed**
 
 Use fixed working-gold OCR so that OCR and rendering failures cannot distort model comparison.
 
 Start with a compact challenge set containing clean-OCR semantic failures and stratified successful controls. Compare the existing complete baseline with viable local candidates under the same context, glossary, formatting, and non-refusal checks. Expand to all 388 regions only when the compact result is close enough to affect the decision.
+
+M4.0/M4.1 evidence:
+
+- translation evaluation is independent from the legacy `benchmark.ts` path and has versioned input, candidate-run, review-overlay, spec, and report contracts with public JSON Schemas and synthetic tests;
+- the fixed population is 388 working-gold regions. Translation quality is eligible on 384 regions; one detection miss and three non-text or bbox-boundary cases are explicitly non-translation responsibility;
+- among the 384 translation-responsibility regions in the historical Sakura output, 303 use raw-identical OCR input, eight are identical after the fixed NFKC-plus-whitespace normalization, and 73 use different OCR input;
+- only the 311 input-agreement regions may contribute to historical translation-quality analysis. The other 73 remain historical E2E attribution only and cannot be counted as a fixed-OCR Sakura model score;
+- the previously observed 240/388 semantic-usable, 240/388 terminology-correct, and 271/388 layout-usable results remain historical E2E review aggregates over mixed OCR inputs;
+- the preregistered compact challenge contains 38 regions across 29 pages: 24 input-agreement semantic or terminology failures and 14 successful controls covering every non-empty category-by-length stratum;
+- challenge length strata are 13 short, 13 medium, and 12 long regions. All 38 regions require explicit non-refusal/non-dilution review;
+- selection uses only fixed eligibility, historical input agreement, pre-existing review labels, page/category/length strata, stable identifiers, a fixed seed, and deterministic SHA-256 ordering. It does not inspect a new candidate and fails closed if the selection parameters or source pins drift;
+- reference translation exactness and edit distance are diagnostics only. They are never a semantic correctness gate, model-selection hard gate, or substitute for reviewed semantic and terminology outcomes;
+- refusal/dilution and context/character-name consistency require explicit review verdicts. The historical review does not contain those verdicts, so the scorer reports zero reviewed denominator instead of inferring them from keywords or prose;
+- the report contains only aggregate evidence, separates deterministic formatting and structural QA from semantic review, and supports paired page-grouped percentile bootstrap comparisons with fixed seed and 95% intervals;
+- the current planned controlled pair is Sakura-GalTransl-7B v3.7 IQ4_XS and Murasaki-8B v0.2 IQ4_XS on the same fixed challenge OCR, page context, no-glossary condition, plain-text formatting contract, and non-refusal/non-dilution requirement. Neither controlled run has been executed.
 
 Goals:
 
@@ -356,7 +380,7 @@ Goals:
 - decide whether a conditional semantic reviewer improves enough cases to justify its cost;
 - lock model identity, quantization, license, and SHA-256 only after the hard gates pass.
 
-Estimated work: one compact local benchmark task and, if necessary, one full text-only benchmark task.
+Estimated work: one separately authorized compact text-only two-candidate run plus review/scoring, and only if its paired result can change the decision, one separately authorized full fixed-input text-only benchmark.
 
 ### M5 — Repair, lettering, and visual QA
 
@@ -443,6 +467,7 @@ The repository must not contain:
 
 ## Immediate next actions
 
-1. Review the M3.9 public diff and synthetic test evidence without changing the frozen private preflight artifacts.
-2. If approved separately, materialize the real composite shadow from the frozen private build input and verify its complete generated manifest; do not start Koharu in that authorization.
-3. Only after a successful reviewed build, request separate authorization for the frozen low-manual three-page lifecycle smoke.
+1. Review the M4.0/M4.1 public contract, schemas, scorer tests, privacy boundary, and ignored private fixed artifacts.
+2. If separately authorized, run only the 38-region text-only challenge for the two preregistered controlled candidates with exact working-gold OCR input and without Koharu, image processing, rendering, cloud fallback, downloads, or firewall changes.
+3. Add explicit review overlays for semantic usability, terminology, refusal/dilution, context/character-name consistency, and layout, then generate the paired page-grouped report.
+4. Expand to all fixed-input regions only if the compact controlled comparison can change the model decision. Keep the M3.10B three-page owned-process smoke deferred until separately authorized.

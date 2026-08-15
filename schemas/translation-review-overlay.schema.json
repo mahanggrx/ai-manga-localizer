@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "translation-review-overlay.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "reviewRevision", "benchmarkId", "candidateId", "source", "entries"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "reviewRevision": { "type": "integer", "minimum": 1 },
+    "benchmarkId": { "$ref": "#/$defs/safeIdentifier" },
+    "candidateId": { "$ref": "#/$defs/safeIdentifier" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input", "candidateRun"],
+      "properties": {
+        "input": { "$ref": "#/$defs/pin" },
+        "candidateRun": { "$ref": "#/$defs/pin" }
+      }
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["regionId", "referenceTranslation", "semanticUsable", "terminologyCorrect", "refusalDilution", "contextCharacterConsistent", "layoutUsable"],
+        "properties": {
+          "regionId": { "$ref": "#/$defs/safeIdentifier" },
+          "referenceTranslation": { "type": "string", "minLength": 1 },
+          "semanticUsable": { "$ref": "#/$defs/reviewVerdict" },
+          "terminologyCorrect": { "$ref": "#/$defs/reviewVerdict" },
+          "refusalDilution": { "enum": ["pass", "refusal", "dilution", "not-reviewed"] },
+          "contextCharacterConsistent": { "$ref": "#/$defs/reviewVerdict" },
+          "layoutUsable": { "$ref": "#/$defs/reviewVerdict" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "safeIdentifier": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "reviewVerdict": { "enum": ["pass", "fail", "not-reviewed"] },
+    "pin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "byteLength"],
+      "properties": {
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "byteLength": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

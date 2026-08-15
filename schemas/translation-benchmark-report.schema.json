@@ -1,0 +1,273 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "translation-benchmark-report.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "benchmarkId", "specId", "source", "population", "claimBoundary", "plannedCandidateCount", "evaluatedCandidateCount", "unevaluatedCandidateIds", "candidates", "pairedComparisons"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "benchmarkId": { "$ref": "#/$defs/safeIdentifier" },
+    "specId": { "$ref": "#/$defs/safeIdentifier" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input", "spec", "candidateRuns"],
+      "properties": {
+        "input": { "$ref": "#/$defs/pin" },
+        "spec": { "$ref": "#/$defs/pin" },
+        "candidateRuns": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["candidateId", "run", "reviewOverlay"],
+            "properties": {
+              "candidateId": { "$ref": "#/$defs/safeIdentifier" },
+              "run": { "$ref": "#/$defs/pin" },
+              "reviewOverlay": { "$ref": "#/$defs/pin" }
+            }
+          }
+        }
+      }
+    },
+    "population": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workingGoldRegions", "translationEligibleRegions", "nonTranslationResponsibilityRegions", "challengeRegions", "challengePages"],
+      "properties": {
+        "workingGoldRegions": { "$ref": "#/$defs/nonnegativeInteger" },
+        "translationEligibleRegions": { "$ref": "#/$defs/nonnegativeInteger" },
+        "nonTranslationResponsibilityRegions": { "$ref": "#/$defs/nonnegativeInteger" },
+        "challengeRegions": { "$ref": "#/$defs/nonnegativeInteger" },
+        "challengePages": { "$ref": "#/$defs/nonnegativeInteger" }
+      }
+    },
+    "claimBoundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fixedWorkingGoldRequiredForControlledScore", "historicalRunsAreNotFixedOcrModelScores", "ocrDifferentRegionsAreHistoricalE2EOnly", "nonTranslationResponsibilityRegionsExcluded", "referenceDistanceIsDiagnosticOnly"],
+      "properties": {
+        "fixedWorkingGoldRequiredForControlledScore": { "const": true },
+        "historicalRunsAreNotFixedOcrModelScores": { "const": true },
+        "ocrDifferentRegionsAreHistoricalE2EOnly": { "const": true },
+        "nonTranslationResponsibilityRegionsExcluded": { "const": true },
+        "referenceDistanceIsDiagnosticOnly": { "const": true }
+      }
+    },
+    "plannedCandidateCount": { "$ref": "#/$defs/nonnegativeInteger" },
+    "evaluatedCandidateCount": { "$ref": "#/$defs/nonnegativeInteger" },
+    "unevaluatedCandidateIds": { "type": "array", "items": { "$ref": "#/$defs/safeIdentifier" } },
+    "candidates": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/candidateReport" } },
+    "pairedComparisons": { "type": "array", "items": { "$ref": "#/$defs/comparison" } }
+  },
+  "$defs": {
+    "safeIdentifier": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "nonnegativeInteger": { "type": "integer", "minimum": 0 },
+    "rate": { "type": "number", "minimum": 0 },
+    "pin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "byteLength"],
+      "properties": {
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "byteLength": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "family", "version", "quantization", "sha256", "license"],
+      "properties": {
+        "id": { "$ref": "#/$defs/safeIdentifier" },
+        "family": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "quantization": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "license": { "type": "string", "minLength": 1 }
+      }
+    },
+    "protocol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["promptMode", "contextMode", "glossaryMode", "formattingContract", "nonRefusalInstruction"],
+      "properties": {
+        "promptMode": { "$ref": "#/$defs/safeIdentifier" },
+        "contextMode": { "$ref": "#/$defs/safeIdentifier" },
+        "glossaryMode": { "$ref": "#/$defs/safeIdentifier" },
+        "formattingContract": { "const": "plain-text-v1" },
+        "nonRefusalInstruction": { "type": "boolean" }
+      }
+    },
+    "binary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reviewed", "passed", "failed", "passRate"],
+      "properties": {
+        "reviewed": { "$ref": "#/$defs/nonnegativeInteger" },
+        "passed": { "$ref": "#/$defs/nonnegativeInteger" },
+        "failed": { "$ref": "#/$defs/nonnegativeInteger" },
+        "passRate": { "$ref": "#/$defs/rate" }
+      }
+    },
+    "refusal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reviewed", "passed", "refusal", "dilution", "passRate"],
+      "properties": {
+        "reviewed": { "$ref": "#/$defs/nonnegativeInteger" },
+        "passed": { "$ref": "#/$defs/nonnegativeInteger" },
+        "refusal": { "$ref": "#/$defs/nonnegativeInteger" },
+        "dilution": { "$ref": "#/$defs/nonnegativeInteger" },
+        "passRate": { "$ref": "#/$defs/rate" }
+      }
+    },
+    "attribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workingGoldRegions", "translationEligibleRegions", "nonTranslationResponsibilityRegions", "observedOutputs", "eligibleOutputs", "excludedOutputs", "missingEligibleOutputs", "ocrInputRawExact", "ocrInputNormalizationOnlyExact", "ocrInputDifferent", "translationQualityAnalyzable", "historicalE2EOnly"],
+      "properties": {
+        "workingGoldRegions": { "$ref": "#/$defs/nonnegativeInteger" },
+        "translationEligibleRegions": { "$ref": "#/$defs/nonnegativeInteger" },
+        "nonTranslationResponsibilityRegions": { "$ref": "#/$defs/nonnegativeInteger" },
+        "observedOutputs": { "$ref": "#/$defs/nonnegativeInteger" },
+        "eligibleOutputs": { "$ref": "#/$defs/nonnegativeInteger" },
+        "excludedOutputs": { "$ref": "#/$defs/nonnegativeInteger" },
+        "missingEligibleOutputs": { "$ref": "#/$defs/nonnegativeInteger" },
+        "ocrInputRawExact": { "$ref": "#/$defs/nonnegativeInteger" },
+        "ocrInputNormalizationOnlyExact": { "$ref": "#/$defs/nonnegativeInteger" },
+        "ocrInputDifferent": { "$ref": "#/$defs/nonnegativeInteger" },
+        "translationQualityAnalyzable": { "$ref": "#/$defs/nonnegativeInteger" },
+        "historicalE2EOnly": { "$ref": "#/$defs/nonnegativeInteger" }
+      }
+    },
+    "historicalE2E": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["population", "semanticUsable", "terminologyCorrect", "layoutUsable", "ocrInputDifferentSubset"],
+      "properties": {
+        "population": { "$ref": "#/$defs/nonnegativeInteger" },
+        "semanticUsable": { "$ref": "#/$defs/binary" },
+        "terminologyCorrect": { "$ref": "#/$defs/binary" },
+        "layoutUsable": { "$ref": "#/$defs/binary" },
+        "ocrInputDifferentSubset": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["population", "semanticUsable", "terminologyCorrect", "layoutUsable"],
+          "properties": {
+            "population": { "$ref": "#/$defs/nonnegativeInteger" },
+            "semanticUsable": { "$ref": "#/$defs/binary" },
+            "terminologyCorrect": { "$ref": "#/$defs/binary" },
+            "layoutUsable": { "$ref": "#/$defs/binary" }
+          }
+        }
+      }
+    },
+    "structuralQa": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evaluated", "passed", "failed", "passRate", "flags"],
+      "properties": {
+        "evaluated": { "$ref": "#/$defs/nonnegativeInteger" },
+        "passed": { "$ref": "#/$defs/nonnegativeInteger" },
+        "failed": { "$ref": "#/$defs/nonnegativeInteger" },
+        "passRate": { "$ref": "#/$defs/rate" },
+        "flags": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["empty-output", "surrounding-whitespace", "disallowed-control", "unpaired-surrogate", "markdown-fence", "too-many-lines", "japanese-kana-remains", "source-echo", "excessive-length-ratio", "excessive-repetition"],
+          "properties": {
+            "empty-output": { "$ref": "#/$defs/nonnegativeInteger" },
+            "surrounding-whitespace": { "$ref": "#/$defs/nonnegativeInteger" },
+            "disallowed-control": { "$ref": "#/$defs/nonnegativeInteger" },
+            "unpaired-surrogate": { "$ref": "#/$defs/nonnegativeInteger" },
+            "markdown-fence": { "$ref": "#/$defs/nonnegativeInteger" },
+            "too-many-lines": { "$ref": "#/$defs/nonnegativeInteger" },
+            "japanese-kana-remains": { "$ref": "#/$defs/nonnegativeInteger" },
+            "source-echo": { "$ref": "#/$defs/nonnegativeInteger" },
+            "excessive-length-ratio": { "$ref": "#/$defs/nonnegativeInteger" },
+            "excessive-repetition": { "$ref": "#/$defs/nonnegativeInteger" }
+          }
+        }
+      }
+    },
+    "referenceDiagnostics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evaluated", "normalizedExact", "normalizedExactRate", "totalEditDistance", "referenceCharacters", "corpusEditDistanceRatio"],
+      "properties": {
+        "evaluated": { "$ref": "#/$defs/nonnegativeInteger" },
+        "normalizedExact": { "$ref": "#/$defs/nonnegativeInteger" },
+        "normalizedExactRate": { "$ref": "#/$defs/rate" },
+        "totalEditDistance": { "$ref": "#/$defs/nonnegativeInteger" },
+        "referenceCharacters": { "$ref": "#/$defs/nonnegativeInteger" },
+        "corpusEditDistanceRatio": { "$ref": "#/$defs/rate" }
+      }
+    },
+    "challenge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["selectedRegions", "availableOutputs", "missingOutputs", "coverageRate", "translationQualityAnalyzable", "historicalE2EOnly", "semanticUsable", "terminologyCorrect", "refusalDilution", "formattingValidity", "contextCharacterConsistency", "layoutUsable", "structuralQa", "referenceDiagnostics"],
+      "properties": {
+        "selectedRegions": { "$ref": "#/$defs/nonnegativeInteger" },
+        "availableOutputs": { "$ref": "#/$defs/nonnegativeInteger" },
+        "missingOutputs": { "$ref": "#/$defs/nonnegativeInteger" },
+        "coverageRate": { "$ref": "#/$defs/rate" },
+        "translationQualityAnalyzable": { "$ref": "#/$defs/nonnegativeInteger" },
+        "historicalE2EOnly": { "$ref": "#/$defs/nonnegativeInteger" },
+        "semanticUsable": { "$ref": "#/$defs/binary" },
+        "terminologyCorrect": { "$ref": "#/$defs/binary" },
+        "refusalDilution": { "$ref": "#/$defs/refusal" },
+        "formattingValidity": { "$ref": "#/$defs/binary" },
+        "contextCharacterConsistency": { "$ref": "#/$defs/binary" },
+        "layoutUsable": { "$ref": "#/$defs/binary" },
+        "structuralQa": { "$ref": "#/$defs/structuralQa" },
+        "referenceDiagnostics": { "$ref": "#/$defs/referenceDiagnostics" }
+      }
+    },
+    "candidateReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidateId", "evidenceClass", "evaluationMode", "model", "protocol", "attribution", "challenge"],
+      "properties": {
+        "candidateId": { "$ref": "#/$defs/safeIdentifier" },
+        "evidenceClass": { "enum": ["controlled-fixed-working-gold", "historical-attribution-only"] },
+        "evaluationMode": { "enum": ["fixed-working-gold", "historical-e2e"] },
+        "model": { "$ref": "#/$defs/model" },
+        "protocol": { "$ref": "#/$defs/protocol" },
+        "attribution": { "$ref": "#/$defs/attribution" },
+        "historicalE2E": { "$ref": "#/$defs/historicalE2E" },
+        "challenge": { "$ref": "#/$defs/challenge" }
+      }
+    },
+    "comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidateA", "candidateB", "evidenceClass", "metric", "pairedRegions", "pairedPages", "candidateARate", "candidateBRate", "differenceBMinusA", "confidenceInterval"],
+      "properties": {
+        "candidateA": { "$ref": "#/$defs/safeIdentifier" },
+        "candidateB": { "$ref": "#/$defs/safeIdentifier" },
+        "evidenceClass": { "enum": ["controlled-paired", "historical-input-agreement-subset-diagnostic"] },
+        "metric": { "enum": ["semantic-usable", "terminology-correct", "refusal-dilution-pass", "formatting-valid", "context-character-consistent", "structural-qa-pass"] },
+        "pairedRegions": { "$ref": "#/$defs/nonnegativeInteger" },
+        "pairedPages": { "$ref": "#/$defs/nonnegativeInteger" },
+        "candidateARate": { "$ref": "#/$defs/rate" },
+        "candidateBRate": { "$ref": "#/$defs/rate" },
+        "differenceBMinusA": { "type": "number" },
+        "confidenceInterval": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["method", "confidenceLevel", "replicates", "lower", "upper"],
+          "properties": {
+            "method": { "const": "paired-page-grouped-bootstrap-percentile" },
+            "confidenceLevel": { "const": 0.95 },
+            "replicates": { "type": "integer", "minimum": 1000 },
+            "lower": { "type": "number" },
+            "upper": { "type": "number" }
+          }
+        }
+      }
+    }
+  }
+}

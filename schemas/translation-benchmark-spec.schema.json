@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "translation-benchmark-spec.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "specRevision", "specId", "benchmarkId", "input", "challenge", "candidates", "metrics", "structuralQa", "comparison"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "specRevision": { "const": 1 },
+    "specId": { "$ref": "#/$defs/safeIdentifier" },
+    "benchmarkId": { "$ref": "#/$defs/safeIdentifier" },
+    "input": { "$ref": "#/$defs/pin" },
+    "challenge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["selectorRevision", "seed", "sourceCandidateId", "sourceCandidateRun", "sourceReviewOverlay", "hardCaseLimit", "successControlPerStratum", "hardCaseDefinition", "successControlDefinition", "selectionSha256", "selectedRegionIds", "hardCaseCount", "successControlCount", "nonRefusalCount", "pageCount", "categoryCounts", "lengthCounts"],
+      "properties": {
+        "selectorRevision": { "const": 1 },
+        "seed": { "$ref": "#/$defs/safeIdentifier" },
+        "sourceCandidateId": { "$ref": "#/$defs/safeIdentifier" },
+        "sourceCandidateRun": { "$ref": "#/$defs/pin" },
+        "sourceReviewOverlay": { "$ref": "#/$defs/pin" },
+        "hardCaseLimit": { "type": "integer", "minimum": 1 },
+        "successControlPerStratum": { "type": "integer", "minimum": 1 },
+        "hardCaseDefinition": { "const": "historical-input-agreement-and-semantic-or-terminology-fail" },
+        "successControlDefinition": { "const": "historical-input-agreement-and-semantic-and-terminology-pass" },
+        "selectionSha256": { "$ref": "#/$defs/sha256" },
+        "selectedRegionIds": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/safeIdentifier" } },
+        "hardCaseCount": { "type": "integer", "minimum": 1 },
+        "successControlCount": { "type": "integer", "minimum": 1 },
+        "nonRefusalCount": { "type": "integer", "minimum": 1 },
+        "pageCount": { "type": "integer", "minimum": 1 },
+        "categoryCounts": { "type": "object" },
+        "lengthCounts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["short", "medium", "long"],
+          "properties": {
+            "short": { "type": "integer", "minimum": 0 },
+            "medium": { "type": "integer", "minimum": 0 },
+            "long": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "candidates": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/candidate" }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["primary", "diagnostics", "referenceDistancePolicy"],
+      "properties": {
+        "primary": {
+          "type": "array",
+          "minItems": 7,
+          "maxItems": 7,
+          "items": { "enum": ["semantic-usable", "terminology-correct", "refusal-dilution", "formatting-validity", "context-character-consistency", "deterministic-structural-qa", "candidate-coverage"] }
+        },
+        "diagnostics": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": { "enum": ["reference-normalized-exact", "reference-edit-distance"] }
+        },
+        "referenceDistancePolicy": { "const": "diagnostic-only-never-a-semantic-gate" }
+      }
+    },
+    "structuralQa": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxLineCount", "maxLengthRatio", "repetitionWindow"],
+      "properties": {
+        "maxLineCount": { "type": "integer", "minimum": 1 },
+        "maxLengthRatio": { "type": "number", "minimum": 1 },
+        "repetitionWindow": { "type": "integer", "minimum": 2 }
+      }
+    },
+    "comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "bootstrapSeed", "replicates", "confidenceLevel"],
+      "properties": {
+        "method": { "const": "paired-page-grouped-bootstrap-percentile" },
+        "bootstrapSeed": { "type": "integer", "minimum": 0 },
+        "replicates": { "type": "integer", "minimum": 1000 },
+        "confidenceLevel": { "const": 0.95 }
+      }
+    }
+  },
+  "$defs": {
+    "safeIdentifier": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "pin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "byteLength"],
+      "properties": {
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "byteLength": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "family", "version", "quantization", "sha256", "license"],
+      "properties": {
+        "id": { "$ref": "#/$defs/safeIdentifier" },
+        "family": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "quantization": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "license": { "type": "string", "minLength": 1 }
+      }
+    },
+    "protocol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["promptMode", "contextMode", "glossaryMode", "formattingContract", "nonRefusalInstruction"],
+      "properties": {
+        "promptMode": { "$ref": "#/$defs/safeIdentifier" },
+        "contextMode": { "$ref": "#/$defs/safeIdentifier" },
+        "glossaryMode": { "$ref": "#/$defs/safeIdentifier" },
+        "formattingContract": { "const": "plain-text-v1" },
+        "nonRefusalInstruction": { "type": "boolean" }
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidateId", "evaluationMode", "model", "protocol"],
+      "properties": {
+        "candidateId": { "$ref": "#/$defs/safeIdentifier" },
+        "evaluationMode": { "enum": ["fixed-working-gold", "historical-e2e"] },
+        "model": { "$ref": "#/$defs/model" },
+        "protocol": { "$ref": "#/$defs/protocol" }
+      }
+    }
+  }
+}

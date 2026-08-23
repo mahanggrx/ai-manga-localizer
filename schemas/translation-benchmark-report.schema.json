@@ -46,13 +46,16 @@
     "claimBoundary": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["fixedWorkingGoldRequiredForControlledScore", "historicalRunsAreNotFixedOcrModelScores", "ocrDifferentRegionsAreHistoricalE2EOnly", "nonTranslationResponsibilityRegionsExcluded", "referenceDistanceIsDiagnosticOnly"],
+      "required": ["fixedWorkingGoldRequiredForControlledScore", "historicalRunsAreNotFixedOcrModelScores", "ocrDifferentRegionsAreHistoricalE2EOnly", "nonTranslationResponsibilityRegionsExcluded", "referenceDistanceIsDiagnosticOnly", "controlledPairedRequiresIdenticalProtocol", "protocolDivergentPipelineComparisonsAreNotControlledScores", "modelOnlyClaimsAreNotSupportedByProtocolDivergentComparison"],
       "properties": {
         "fixedWorkingGoldRequiredForControlledScore": { "const": true },
         "historicalRunsAreNotFixedOcrModelScores": { "const": true },
         "ocrDifferentRegionsAreHistoricalE2EOnly": { "const": true },
         "nonTranslationResponsibilityRegionsExcluded": { "const": true },
-        "referenceDistanceIsDiagnosticOnly": { "const": true }
+        "referenceDistanceIsDiagnosticOnly": { "const": true },
+        "controlledPairedRequiresIdenticalProtocol": { "const": true },
+        "protocolDivergentPipelineComparisonsAreNotControlledScores": { "const": true },
+        "modelOnlyClaimsAreNotSupportedByProtocolDivergentComparison": { "const": true }
       }
     },
     "plannedCandidateCount": { "$ref": "#/$defs/nonnegativeInteger" },
@@ -232,7 +235,7 @@
       "required": ["candidateId", "evidenceClass", "evaluationMode", "model", "protocol", "attribution", "challenge"],
       "properties": {
         "candidateId": { "$ref": "#/$defs/safeIdentifier" },
-        "evidenceClass": { "enum": ["controlled-fixed-working-gold", "historical-attribution-only"] },
+        "evidenceClass": { "enum": ["controlled-fixed-working-gold", "protocol-divergent-fixed-working-gold", "historical-attribution-only"] },
         "evaluationMode": { "enum": ["fixed-working-gold", "historical-e2e"] },
         "model": { "$ref": "#/$defs/model" },
         "protocol": { "$ref": "#/$defs/protocol" },
@@ -248,7 +251,7 @@
       "properties": {
         "candidateA": { "$ref": "#/$defs/safeIdentifier" },
         "candidateB": { "$ref": "#/$defs/safeIdentifier" },
-        "evidenceClass": { "enum": ["controlled-paired", "historical-input-agreement-subset-diagnostic"] },
+        "evidenceClass": { "enum": ["controlled-paired", "protocol-divergent-pipeline-comparison", "historical-input-agreement-subset-diagnostic"] },
         "metric": { "enum": ["semantic-usable", "terminology-correct", "refusal-dilution-pass", "formatting-valid", "context-character-consistent", "structural-qa-pass"] },
         "pairedRegions": { "$ref": "#/$defs/nonnegativeInteger" },
         "pairedPages": { "$ref": "#/$defs/nonnegativeInteger" },

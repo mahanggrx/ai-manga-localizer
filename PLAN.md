@@ -351,11 +351,11 @@ Estimated work: one separately authorized three-page owned-process smoke and rev
 
 ### M4 — Controlled translation selection
 
-Status: **M4.0/M4.1 contract, scorer, private derivation, challenge preregistration, and historical attribution report complete; controlled candidate runs not executed**
+Status: **M4.0/M4.1 complete; corrected 38-region comparison complete; M4.3A v2.1 96-region residual scoring complete; decision `FAIL` on the catastrophic category-by-length structural-QA gate; no provisional route frozen**
 
 Use fixed working-gold OCR so that OCR and rendering failures cannot distort model comparison.
 
-Start with a compact challenge set containing clean-OCR semantic failures and stratified successful controls. Compare the existing complete baseline with viable local candidates under the same context, glossary, formatting, and non-refusal checks. Expand to all 388 regions only when the compact result is close enough to affect the decision.
+Start with a compact challenge set containing clean-OCR semantic failures and stratified successful controls. Strict controlled comparisons require an identical complete protocol identity. A comparison that intentionally uses each model's own supported prompt or context protocol must be explicitly preregistered and reported as a protocol-divergent pipeline comparison; it may compare deployable routes but cannot isolate a model-only effect. Expand only when the compact result is close enough to affect the decision.
 
 M4.0/M4.1 evidence:
 
@@ -370,7 +370,25 @@ M4.0/M4.1 evidence:
 - reference translation exactness and edit distance are diagnostics only. They are never a semantic correctness gate, model-selection hard gate, or substitute for reviewed semantic and terminology outcomes;
 - refusal/dilution and context/character-name consistency require explicit review verdicts. The historical review does not contain those verdicts, so the scorer reports zero reviewed denominator instead of inferring them from keywords or prose;
 - the report contains only aggregate evidence, separates deterministic formatting and structural QA from semantic review, and supports paired page-grouped percentile bootstrap comparisons with fixed seed and 95% intervals;
-- the current planned controlled pair is Sakura-GalTransl-7B v3.7 IQ4_XS and Murasaki-8B v0.2 IQ4_XS on the same fixed challenge OCR, page context, no-glossary condition, plain-text formatting contract, and non-refusal/non-dilution requirement. Neither controlled run has been executed.
+- the earlier Murasaki response protocol did not produce a valid controlled candidate and was not loosened post hoc. It is not part of the current comparison;
+- the earlier Sakura 38-region candidate echoed its custom wrapper and was invalidated as a translation candidate rather than scored as poor translation quality;
+- the corrected Sakura-GalTransl-7B v3.7 IQ4_XS run used the publisher protocol and completed all 38 fixed-OCR regions without retry. Hy-MT2 7B Q4_K_M used its fixed official-context protocol. Because their context protocols differ, their result is explicitly a **protocol-divergent pipeline comparison**, not `controlled-paired` and not a model-only causal result;
+- label-blind review was completed before the candidate mapping was opened. A read-only independent review informed an append-only adjudication record. The primary reviewer had previously seen one candidate's text, so this is label-blind but not candidate-text-naive evidence;
+- Sakura official-protocol pipeline: semantic usable 24/38, terminology correct 27/38, context/character consistent 23/38, formatting valid 38/38, text-only layout usable 38/38, deterministic structural QA 37/38, and refusal/dilution pass 38/38;
+- Hy-MT2 official-context pipeline: semantic usable 21/38, terminology correct 25/38, context/character consistent 19/38, formatting valid 38/38, text-only layout usable 37/38, deterministic structural QA 31/38, and refusal/dilution pass 38/38;
+- blind preference was Sakura 17, Hy-MT2 14, and no material preference 7. On the 24 hard cases, Hy-MT2 was slightly higher for semantic usability (12 versus 10) and terminology (15 versus 13), while Sakura was perfect on all 14 historical success controls;
+- page-grouped 95% intervals crossed zero for semantic, terminology, and context differences. Only structural QA favored Sakura with an interval excluding zero. The compact evidence therefore supports Sakura official protocol as the **provisional primary route** and Hy-MT2 as a retained hard-case candidate, but does not freeze a default model or justify an automatic hybrid selector;
+- the scorer now fails closed unless strict controlled candidates share the complete protocol identity, including `promptMode`. Explicit protocol-divergent comparisons receive separate candidate and paired evidence classes and carry report-level claim boundaries against controlled-score or model-only claims.
+- M4.3A used the preregistered new 96-region residual set from the 346 eligible regions outside the earlier 38-region challenge. Selection used only fixed eligibility, page/category/length metadata, stable identifiers, and a fixed seed; it covers 49 pages, caps every page at three regions, and remains disjoint from the earlier challenge;
+- all 15 category-by-length strata remain represented. Fourteen strata can simultaneously satisfy the four-region first-pass quota under the page cap. One structurally concentrated stratum cannot coexist with every other quota under that cap; this conflict is explicit rather than silently underfilled, and the final set still contains two regions from it;
+- the fixed residual input contains three multiline OCR regions. The v2.1 Sakura runner sends one request per region, so multiline text remains inside a single response and cannot be cross-region reassembled; Hy-MT2 continues to use one request per region with selected-set same-page context;
+- both routes were rerun on all 96 residual regions. The earlier 38 outputs remain anchor evidence only because changing Sakura batch composition and Hy selected-set page context changes both protocols' effective inputs;
+- the M4.3A decision contract is a non-inferiority gate for a provisional primary route: semantic and terminology page-clustered lower bounds must be at least -10 percentage points, structural QA at least -5 points, coverage must be complete, and refusal, dilution, protocol leakage, or catastrophic stratum regressions fail the freeze. An inconclusive result escalates to M4.3B over all 384 regions without post-hoc threshold tuning;
+- the v2 package was terminated append-only after an independent acceptance found that cleanup failure could still reach the final-directory rename. v2.1 keeps failed receipts in staging, performs two child/port cleanup confirmations, and records the exact application-loopback-only/no-redirect/no-OS-firewall boundary; its runner, selector, tests, freeze script, fixed private input, selection receipt, execution spec, and freeze receipt are read-only and prepared without starting a model. The runner requires an exact v2.1 spec-hash approval binding, rejects the v2 approval hash, GPU offload evidence, no retries, atomic candidate publication, and process/port cleanup.
+- M4.3A v2.1 scoring completed all 96 residual regions across 49 pages with 96/96 coverage for both candidates. Sakura scored 88/96 deterministic structural-QA passes and Hy-MT2 scored 80/96; the page-clustered Sakura-minus-Hy structural-QA 95% lower bound was +3.03 percentage points, but eight candidate-by-stratum structural-QA rates were below the preregistered 0.80 catastrophic threshold, so the decision is **FAIL** and no provisional route is frozen. This is a preregistered stratified safety-gate result, not a claim that either model is globally unusable.
+- The final blind verdict contract provides one pair-level dimension record per region, so candidate-attributed semantic, terminology, refusal/dilution, context, and layout rates remain unidentifiable. The scoring report records that limitation and applies no post-hoc attribution rule or selector.
+- Deterministic scoring read candidate response bodies only in memory for structural QA; it did not emit or log them, and they were not provided to blind reviewers. Reference translations and review overlays were not read.
+- The v2 candidate-attribution reproduction receipt records that both sealed maps had zero bytes read or hashed until all declared input hashes/bytes, read-only/ignored states, freeze manifests/receipts, verdict coverage, and secondary/adjudication scope coverage passed; only then were the maps read, hashed, and used for attribution. It merged adjudication over unadjudicated secondary over primary (157 primary, 12 secondary, 23 adjudication) for all 96 regions. Its six-dimension rates and page-clustered bootstrap are descriptive evidence only; they do not alter the existing catastrophic-strata **FAIL**, create a selector, or freeze a route.
 
 Goals:
 
@@ -380,7 +398,7 @@ Goals:
 - decide whether a conditional semantic reviewer improves enough cases to justify its cost;
 - lock model identity, quantization, license, and SHA-256 only after the hard gates pass.
 
-Estimated work: one separately authorized compact text-only two-candidate run plus review/scoring, and only if its paired result can change the decision, one separately authorized full fixed-input text-only benchmark.
+Estimated work: **completed for M4.3A v2.1**: the authorized 96-region two-route run, blinded review, unblinding, and preregistered scoring are complete. No M4.3B expansion follows from this hard `FAIL`; any future benchmark requires a fresh preregistration and authorization.
 
 ### M5 — Repair, lettering, and visual QA
 
@@ -467,7 +485,8 @@ The repository must not contain:
 
 ## Immediate next actions
 
-1. Review the M4.0/M4.1 public contract, schemas, scorer tests, privacy boundary, and ignored private fixed artifacts.
-2. If separately authorized, run only the 38-region text-only challenge for the two preregistered controlled candidates with exact working-gold OCR input and without Koharu, image processing, rendering, cloud fallback, downloads, or firewall changes.
-3. Add explicit review overlays for semantic usability, terminology, refusal/dilution, context/character-name consistency, and layout, then generate the paired page-grouped report.
-4. Expand to all fixed-input regions only if the compact controlled comparison can change the model decision. Keep the M3.10B three-page owned-process smoke deferred until separately authorized.
+1. Freeze the M4.2 public scorer/schema change after full tests, privacy checks, and adversarial review; retain all private candidate text, mapping, and review material outside Git.
+2. Preserve the completed M4.3A v2.1 residual evidence and do not freeze a provisional route after the `FAIL` decision; the earlier 38 outputs remain anchor evidence only.
+3. Treat the candidate-attribution supplement as complete descriptive evidence; before any new model-selection run, resolve the candidate-attributed blind-dimension contract and catastrophic structural-QA strata under a separately authorized, preregistered change; do not tune thresholds or add a selector post hoc.
+4. Do not enter M4.3B solely from this hard `FAIL`; keep the M3.10B three-page owned-process smoke deferred until separately authorized.
+5. M4.4 completed the canonical 64-page replace-only Sakura/Hy run and working review. Both met the absolute MVP gates, but Sakura missed the paired terminology non-inferiority bound; use Hy-MT2 as the provisional personal-MVP primary translator and move to the smallest real end-to-end chapter slice instead of adding more model-selection infrastructure.

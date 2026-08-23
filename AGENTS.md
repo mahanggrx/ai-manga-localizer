@@ -1,5 +1,12 @@
 # Repository working agreements
 
+## Current delivery mode
+
+- Prioritize a usable personal MVP over commercial-grade completeness. Implement the shortest reliable path to something the user can actually run, then improve it from the user's real experience.
+- Do not add speculative infrastructure, exhaustive freeze chains, repeated audits, or defensive checks unless they directly prevent likely data loss, privacy leakage, unusable output, or a demonstrated failure.
+- Use the minimum validation that proves the changed behavior. Stop when the current milestone is usable; record non-blocking refinements as later work instead of implementing them immediately.
+- Subagents are optional and should be short-lived and bounded. Until the user changes the setting, use `gpt-5.6-sol` with `medium` reasoning for subagents, and terminate them after their result is handed back.
+
 ## Purpose and scope
 
 - This repository is a local-first, non-commercial Japanese manga to Simplified Chinese quality orchestrator for Koharu.

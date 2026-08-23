@@ -86,7 +86,8 @@
         "method": { "const": "paired-page-grouped-bootstrap-percentile" },
         "bootstrapSeed": { "type": "integer", "minimum": 0 },
         "replicates": { "type": "integer", "minimum": 1000 },
-        "confidenceLevel": { "const": 0.95 }
+        "confidenceLevel": { "const": 0.95 },
+        "protocolComparisonMode": { "enum": ["identical-controlled-v1", "explicit-protocol-divergent-pipeline-v1"] }
       }
     }
   },

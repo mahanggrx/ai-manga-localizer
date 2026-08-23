@@ -285,6 +285,77 @@ test("scorer keeps reference distance diagnostic and produces paired page-groupe
   assert.ok(semantic.confidenceInterval.upper >= semantic.differenceBMinusA);
 });
 
+test("protocol-divergent pipeline comparison is explicit and never reported as controlled-paired", async () => {
+  const f = fixture();
+  const secondProtocol: TranslationProtocolIdentity = { ...CONTROLLED_PROTOCOL, promptMode: "candidate-specific-prompt-v1" };
+  const secondModel = { ...CONTROLLED_MODEL, id: "pipeline-model", sha256: "3".repeat(64) };
+  const secondRun = JSON.parse(Buffer.from(f.controlledRunBytes).toString("utf8"));
+  secondRun.runId = "pipeline-run-v1";
+  secondRun.candidateId = "pipeline-candidate";
+  secondRun.model = secondModel;
+  secondRun.protocol = secondProtocol;
+  const secondRunBytes = serializeTranslationArtifact(secondRun);
+  const secondOverlay = JSON.parse(Buffer.from(f.controlledOverlayBytes).toString("utf8"));
+  secondOverlay.candidateId = secondRun.candidateId;
+  secondOverlay.source.candidateRun = { sha256: sha256Bytes(secondRunBytes), byteLength: secondRunBytes.byteLength };
+  const secondOverlayBytes = serializeTranslationArtifact(secondOverlay);
+  const divergentSpec = JSON.parse(Buffer.from(f.specBytes).toString("utf8"));
+  divergentSpec.candidates.push({
+    candidateId: secondRun.candidateId,
+    evaluationMode: "fixed-working-gold",
+    model: secondModel,
+    protocol: secondProtocol,
+  });
+  assert.throws(
+    () => evaluateTranslationBenchmark(
+      f.inputBytes,
+      serializeTranslationArtifact(divergentSpec),
+      [f.historicalRunBytes, f.controlledRunBytes, secondRunBytes],
+      [f.historicalOverlayBytes, f.controlledOverlayBytes, secondOverlayBytes],
+    ),
+    /do not share an identical protocol/,
+  );
+  divergentSpec.comparison.protocolComparisonMode = "explicit-protocol-divergent-pipeline-v1";
+  const falselyDivergentSpec = structuredClone(divergentSpec);
+  falselyDivergentSpec.candidates[2].protocol = CONTROLLED_PROTOCOL;
+  assert.throws(
+    () => evaluateTranslationBenchmark(
+      f.inputBytes,
+      serializeTranslationArtifact(falselyDivergentSpec),
+      [f.historicalRunBytes, f.controlledRunBytes, secondRunBytes],
+      [f.historicalOverlayBytes, f.controlledOverlayBytes, secondOverlayBytes],
+    ),
+    /does not contain a protocol difference/,
+  );
+  const divergentSpecBytes = serializeTranslationArtifact(divergentSpec);
+  const report = evaluateTranslationBenchmark(
+    f.inputBytes,
+    divergentSpecBytes,
+    [f.historicalRunBytes, f.controlledRunBytes, secondRunBytes],
+    [f.historicalOverlayBytes, f.controlledOverlayBytes, secondOverlayBytes],
+  );
+  const paired = report.pairedComparisons.find((comparison) =>
+    comparison.candidateA === "controlled-candidate"
+      && comparison.candidateB === "pipeline-candidate"
+      && comparison.metric === "semantic-usable");
+  assert.equal(paired?.evidenceClass, "protocol-divergent-pipeline-comparison");
+  assert.equal(report.candidates.find((candidate) => candidate.candidateId === "controlled-candidate")?.evidenceClass, "protocol-divergent-fixed-working-gold");
+  assert.equal(report.claimBoundary.controlledPairedRequiresIdenticalProtocol, true);
+  assert.equal(report.claimBoundary.protocolDivergentPipelineComparisonsAreNotControlledScores, true);
+  assert.equal(report.claimBoundary.modelOnlyClaimsAreNotSupportedByProtocolDivergentComparison, true);
+  await assertSchema("translation-benchmark-spec.schema.json", divergentSpec);
+  await assertSchema("translation-benchmark-report.schema.json", report);
+  for (const field of [
+    "controlledPairedRequiresIdenticalProtocol",
+    "protocolDivergentPipelineComparisonsAreNotControlledScores",
+    "modelOnlyClaimsAreNotSupportedByProtocolDivergentComparison",
+  ]) {
+    const missingBoundary = structuredClone(report) as unknown as Record<string, unknown>;
+    delete (missingBoundary.claimBoundary as Record<string, unknown>)[field];
+    await assert.rejects(() => assertSchema("translation-benchmark-report.schema.json", missingBoundary), /required/);
+  }
+});
+
 test("fixed-working-gold candidate input drift and stale review pins fail closed", () => {
   const f = fixture();
   const drifted = JSON.parse(Buffer.from(f.controlledRunBytes).toString("utf8"));

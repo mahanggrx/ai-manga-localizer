@@ -3,6 +3,7 @@ import { sha256Bytes } from "./file-utils.ts";
 import { deriveOcrBenchmarkInput, normalizeOcrText, type OcrExclusionReason } from "./ocr-benchmark.ts";
 
 export type TranslationEvaluationMode = "fixed-working-gold" | "historical-e2e";
+export type TranslationProtocolComparisonMode = "identical-controlled-v1" | "explicit-protocol-divergent-pipeline-v1";
 export type TranslationEligibility = "eligible" | "excluded";
 export type TranslationLengthStratum = "short" | "medium" | "long";
 export type TranslationReviewVerdict = "pass" | "fail" | "not-reviewed";
@@ -149,6 +150,7 @@ export interface TranslationBenchmarkSpec {
     bootstrapSeed: number;
     replicates: number;
     confidenceLevel: 0.95;
+    protocolComparisonMode?: TranslationProtocolComparisonMode;
   };
 }
 
@@ -177,7 +179,7 @@ export interface StructuralQaSummary {
 
 export interface TranslationCandidateReport {
   candidateId: string;
-  evidenceClass: "controlled-fixed-working-gold" | "historical-attribution-only";
+  evidenceClass: "controlled-fixed-working-gold" | "protocol-divergent-fixed-working-gold" | "historical-attribution-only";
   evaluationMode: TranslationEvaluationMode;
   model: TranslationModelIdentity;
   protocol: TranslationProtocolIdentity;
@@ -237,7 +239,7 @@ export type ComparisonMetric = "semantic-usable" | "terminology-correct" | "refu
 export interface TranslationPairedComparison {
   candidateA: string;
   candidateB: string;
-  evidenceClass: "controlled-paired" | "historical-input-agreement-subset-diagnostic";
+  evidenceClass: "controlled-paired" | "protocol-divergent-pipeline-comparison" | "historical-input-agreement-subset-diagnostic";
   metric: ComparisonMetric;
   pairedRegions: number;
   pairedPages: number;
@@ -275,6 +277,9 @@ export interface TranslationBenchmarkReport {
     ocrDifferentRegionsAreHistoricalE2EOnly: true;
     nonTranslationResponsibilityRegionsExcluded: true;
     referenceDistanceIsDiagnosticOnly: true;
+    controlledPairedRequiresIdenticalProtocol: true;
+    protocolDivergentPipelineComparisonsAreNotControlledScores: true;
+    modelOnlyClaimsAreNotSupportedByProtocolDivergentComparison: true;
   };
   plannedCandidateCount: number;
   evaluatedCandidateCount: number;
@@ -338,6 +343,7 @@ const REVIEW_VERDICTS = new Set<TranslationReviewVerdict>(["pass", "fail", "not-
 const REFUSAL_VERDICTS = new Set<RefusalDilutionVerdict>(["pass", "refusal", "dilution", "not-reviewed"]);
 const ELIGIBILITIES = new Set<TranslationEligibility>(["eligible", "excluded"]);
 const EVALUATION_MODES = new Set<TranslationEvaluationMode>(["fixed-working-gold", "historical-e2e"]);
+const PROTOCOL_COMPARISON_MODES = new Set<TranslationProtocolComparisonMode>(["identical-controlled-v1", "explicit-protocol-divergent-pipeline-v1"]);
 const EXCLUSION_REASONS = new Set<OcrExclusionReason>(["detection-missed", "non-text-false-positive", "partial-glyph-bbox", "boundary-clipped"]);
 const LENGTH_STRATA = new Set<TranslationLengthStratum>(["short", "medium", "long"]);
 const PRIMARY_METRICS = ["semantic-usable", "terminology-correct", "refusal-dilution", "formatting-validity", "context-character-consistency", "deterministic-structural-qa", "candidate-coverage"] as const;
@@ -726,6 +732,7 @@ export function createTranslationBenchmarkSpec(
     successControlPerStratum?: number;
     bootstrapSeed?: number;
     bootstrapReplicates?: number;
+    protocolComparisonMode?: TranslationProtocolComparisonMode;
   },
 ): TranslationBenchmarkSpec {
   const input = parseTranslationBenchmarkInput(inputBytes);
@@ -736,6 +743,9 @@ export function createTranslationBenchmarkSpec(
   if (sourceOverlay.entries.length !== input.regions.length || new Set(sourceOverlay.entries.map((entry) => entry.regionId)).size !== input.regions.length) invalid("challenge source review overlay must cover the complete fixed population");
   const declarations = candidates.map((candidate, index) => parseCandidateDeclaration(candidate, "candidate declaration " + index));
   if (new Set(declarations.map((candidate) => candidate.candidateId)).size !== declarations.length) invalid("candidate declarations contain duplicate ids");
+  const protocolComparisonMode = options.protocolComparisonMode ?? "identical-controlled-v1";
+  if (!PROTOCOL_COMPARISON_MODES.has(protocolComparisonMode)) invalid("translation protocol comparison mode is invalid");
+  validateProtocolComparisonMode(declarations, protocolComparisonMode);
   const sourceDeclaration = declarations.find((candidate) => candidate.candidateId === sourceRun.candidateId);
   if (!sourceDeclaration || sourceDeclaration.evaluationMode !== "historical-e2e") invalid("candidate declarations omit the historical challenge source");
   assertCandidateIdentity(sourceRun, sourceDeclaration);
@@ -785,6 +795,7 @@ export function createTranslationBenchmarkSpec(
       bootstrapSeed: integer(options.bootstrapSeed ?? 20260815, "bootstrapSeed", 0),
       replicates: integer(options.bootstrapReplicates ?? 5000, "bootstrapReplicates", 1000),
       confidenceLevel: 0.95,
+      ...(options.protocolComparisonMode === undefined ? {} : { protocolComparisonMode: options.protocolComparisonMode }),
     },
   };
 }
@@ -944,6 +955,18 @@ function parseCandidateDeclaration(value: unknown, label: string): TranslationCa
   return { candidateId: safeIdentifier(item.candidateId, label + " candidateId"), evaluationMode, model: parseModel(item.model, label + " model"), protocol };
 }
 
+function validateProtocolComparisonMode(candidates: TranslationCandidateDeclaration[], mode: TranslationProtocolComparisonMode): void {
+  const controlled = candidates.filter((candidate) => candidate.evaluationMode === "fixed-working-gold");
+  if (controlled.length > 1) {
+    const shared = controlled[0].protocol;
+    const protocolDifferenceObserved = controlled.slice(1).some((candidate) => JSON.stringify(candidate.protocol) !== JSON.stringify(shared));
+    if (mode === "identical-controlled-v1" && protocolDifferenceObserved) invalid("controlled candidates do not share an identical protocol identity");
+    if (mode === "explicit-protocol-divergent-pipeline-v1" && !protocolDifferenceObserved) invalid("protocol-divergent pipeline comparison does not contain a protocol difference");
+  } else if (mode === "explicit-protocol-divergent-pipeline-v1") {
+    invalid("protocol-divergent pipeline comparison requires at least two fixed-working-gold candidates");
+  }
+}
+
 function assertCandidateIdentity(run: TranslationCandidateRun, declaration: TranslationCandidateDeclaration): void {
   if (run.candidateId !== declaration.candidateId || run.evaluationMode !== declaration.evaluationMode
     || JSON.stringify(run.model) !== JSON.stringify(declaration.model) || JSON.stringify(run.protocol) !== JSON.stringify(declaration.protocol)) {
@@ -1005,16 +1028,12 @@ export function parseTranslationBenchmarkSpec(bytes: Uint8Array, input: Translat
   if (new Set(candidates.map((candidate) => candidate.candidateId)).size !== candidates.length) invalid("translation benchmark spec contains duplicate candidate ids");
   const sourceCandidateId = safeIdentifier(challenge.sourceCandidateId, "translation challenge sourceCandidateId");
   if (!candidates.some((candidate) => candidate.candidateId === sourceCandidateId && candidate.evaluationMode === "historical-e2e")) invalid("translation challenge source is not a declared historical candidate");
-  const controlled = candidates.filter((candidate) => candidate.evaluationMode === "fixed-working-gold");
-  if (controlled.length > 1) {
-    const shared = controlled[0].protocol;
-    for (const candidate of controlled.slice(1)) {
-      if (candidate.protocol.contextMode !== shared.contextMode || candidate.protocol.glossaryMode !== shared.glossaryMode
-        || candidate.protocol.formattingContract !== shared.formattingContract || candidate.protocol.nonRefusalInstruction !== shared.nonRefusalInstruction) {
-        invalid("controlled candidates do not share context, glossary, formatting, and non-refusal protocol boundaries");
-      }
-    }
-  }
+  const comparison = record(value.comparison, "translation comparison spec");
+  allowedFields(comparison, ["method", "bootstrapSeed", "replicates", "confidenceLevel", "protocolComparisonMode"], "translation comparison spec");
+  if (comparison.method !== "paired-page-grouped-bootstrap-percentile" || comparison.confidenceLevel !== 0.95) invalid("translation paired comparison contract is invalid");
+  const protocolComparisonMode = (comparison.protocolComparisonMode ?? "identical-controlled-v1") as TranslationProtocolComparisonMode;
+  if (!PROTOCOL_COMPARISON_MODES.has(protocolComparisonMode)) invalid("translation protocol comparison mode is invalid");
+  validateProtocolComparisonMode(candidates, protocolComparisonMode);
   const metrics = record(value.metrics, "translation benchmark metrics");
   allowedFields(metrics, ["primary", "diagnostics", "referenceDistancePolicy"], "translation benchmark metrics");
   exactStringArray(metrics.primary, PRIMARY_METRICS, "translation primary metrics");
@@ -1026,9 +1045,6 @@ export function parseTranslationBenchmarkSpec(bytes: Uint8Array, input: Translat
   const maxLengthRatio = finiteNumber(structuralQa.maxLengthRatio, "maxLengthRatio", 1);
   const repetitionWindow = integer(structuralQa.repetitionWindow, "repetitionWindow", 2);
   if (maxLineCount > 100 || maxLengthRatio > 20 || repetitionWindow > 32) invalid("translation structural QA thresholds are outside supported bounds");
-  const comparison = record(value.comparison, "translation comparison spec");
-  allowedFields(comparison, ["method", "bootstrapSeed", "replicates", "confidenceLevel"], "translation comparison spec");
-  if (comparison.method !== "paired-page-grouped-bootstrap-percentile" || comparison.confidenceLevel !== 0.95) invalid("translation paired comparison contract is invalid");
   const benchmarkId = safeIdentifier(value.benchmarkId, "translation spec benchmarkId");
   if (benchmarkId !== input.benchmarkId) invalid("translation spec benchmarkId differs from input");
   return {
@@ -1064,6 +1080,7 @@ export function parseTranslationBenchmarkSpec(bytes: Uint8Array, input: Translat
       bootstrapSeed: integer(comparison.bootstrapSeed, "bootstrapSeed", 0),
       replicates: integer(comparison.replicates, "bootstrap replicates", 1000),
       confidenceLevel: 0.95,
+      protocolComparisonMode,
     },
   };
 }
@@ -1273,7 +1290,9 @@ function evaluateCandidate(
   const formatting = binarySummary(formattingVerdicts);
   const report: TranslationCandidateReport = {
     candidateId: run.candidateId,
-    evidenceClass: run.evaluationMode === "fixed-working-gold" ? "controlled-fixed-working-gold" : "historical-attribution-only",
+    evidenceClass: run.evaluationMode === "fixed-working-gold"
+      ? spec.comparison.protocolComparisonMode === "explicit-protocol-divergent-pipeline-v1" ? "protocol-divergent-fixed-working-gold" : "controlled-fixed-working-gold"
+      : "historical-attribution-only",
     evaluationMode: run.evaluationMode,
     model: run.model,
     protocol: run.protocol,
@@ -1393,7 +1412,9 @@ function compareCandidates(
     comparisons.push({
       candidateA: left.report.candidateId,
       candidateB: right.report.candidateId,
-      evidenceClass: left.report.evaluationMode === "fixed-working-gold" && right.report.evaluationMode === "fixed-working-gold" ? "controlled-paired" : "historical-input-agreement-subset-diagnostic",
+      evidenceClass: left.report.evaluationMode === "fixed-working-gold" && right.report.evaluationMode === "fixed-working-gold"
+        ? spec.comparison.protocolComparisonMode === "explicit-protocol-divergent-pipeline-v1" ? "protocol-divergent-pipeline-comparison" : "controlled-paired"
+        : "historical-input-agreement-subset-diagnostic",
       metric,
       pairedRegions: pairs.length,
       pairedPages: pages.length,
@@ -1500,6 +1521,9 @@ export function evaluateTranslationBenchmark(
       ocrDifferentRegionsAreHistoricalE2EOnly: true,
       nonTranslationResponsibilityRegionsExcluded: true,
       referenceDistanceIsDiagnosticOnly: true,
+      controlledPairedRequiresIdenticalProtocol: true,
+      protocolDivergentPipelineComparisonsAreNotControlledScores: true,
+      modelOnlyClaimsAreNotSupportedByProtocolDivergentComparison: true,
     },
     plannedCandidateCount: spec.candidates.length,
     evaluatedCandidateCount: evaluations.length,

@@ -13,7 +13,7 @@ const HELP = `manga-localizer - local-first Japanese manga quality orchestrator
 Usage:
   manga-localizer doctor [--config FILE] [--json]
   manga-localizer benchmark GOLDEN_SET [--out DIRECTORY]
-  manga-localizer translate-mvp INPUT --out DIRECTORY
+  manga-localizer translate-mvp INPUT --out DIRECTORY [--outside-text]
   manga-localizer translate INPUT --out DIRECTORY [--profile quality-local] [--allow-cloud] [--psd] [--config FILE]
 
 The CLI never downloads models or overwrites existing output. translate-mvp uses the installed MangaTranslator + Hy-MT2 local path; translate uses the experimental owned Koharu path.
@@ -29,7 +29,7 @@ function parseArgs(args: string[]): ParsedArgs {
   const [command, ...rest] = args;
   const positionals: string[] = [];
   const options = new Map<string, string | true>();
-  const booleanOptions = new Set(["--json", "--allow-cloud", "--psd", "--help", "-h"]);
+  const booleanOptions = new Set(["--json", "--allow-cloud", "--psd", "--outside-text", "--help", "-h"]);
   for (let index = 0; index < rest.length; index += 1) {
     const token = rest[index];
     if (!token.startsWith("-")) {
@@ -111,8 +111,9 @@ async function main(): Promise<void> {
     const result = await runMvpTranslate(config, {
       inputPath: path.resolve(args.positionals[0]),
       outputParent: path.resolve(outputParent),
+      outsideText: flag(args, "--outside-text"),
     });
-    process.stdout.write(`MVP translation ${result.report.status}: ${result.imagesDirectory}\n`);
+    process.stdout.write(`MVP translation ${result.report.status}: ${result.cbzPath}\n`);
     return;
   }
   throw new LocalizerError("CLI_COMMAND_UNKNOWN", `Unknown command: ${args.command}`);

@@ -4,9 +4,9 @@ import { copyFile, lstat, mkdir, readdir, readFile, stat, unlink } from "node:fs
 import { createServer } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { detectMediaType, loadInputImages } from "./archive.ts";
+import { createCbzBuffer, detectMediaType, loadInputImages, naturalCompare } from "./archive.ts";
 import { LocalizerError, asLocalizerError } from "./errors.ts";
-import { createUniqueDirectory, safeSlug, writeJsonExclusive } from "./file-utils.ts";
+import { createUniqueDirectory, safeSlug, writeExclusive, writeJsonExclusive } from "./file-utils.ts";
 import { assertSchema } from "./schema.ts";
 import type { LocalizerConfig } from "./types.ts";
 
@@ -24,23 +24,27 @@ export interface MangaTranslatorAssets {
   models: string;
   fonts: string;
   cache: string;
+  outsideTextDetector: string;
 }
 
 export interface MvpTranslateReport {
-  schemaVersion: 1;
+  schemaVersion: 3;
   status: "completed" | "partial" | "failed";
   startedAt: string;
   completedAt: string;
   inputKind: "directory" | "zip" | "cbz" | "image" | "unknown";
   outputImages: number;
   failedImages: number;
+  outsideTextMode: "disabled" | "text-free-opencv";
   engine: { pipeline: "MangaTranslator"; translator: "Hy-MT2-7B-Q4_K_M"; ocr: "manga-ocr" };
+  cbz?: "translated.cbz";
   errorCode?: string;
 }
 
 export interface MvpTranslateResult {
   directory: string;
   imagesDirectory: string;
+  cbzPath: string;
   report: MvpTranslateReport;
 }
 
@@ -54,6 +58,7 @@ export function defaultMangaTranslatorAssets(root = PROJECT_ROOT): MangaTranslat
     models: path.join(mangaTranslator, "models"),
     fonts: path.join(mangaTranslator, "fonts", "Noto Sans SC"),
     cache: path.join(root, ".local", "manga-translator", "cache"),
+    outsideTextDetector: path.join(mangaTranslator, "models", "rtdetr", "comic-text-and-bubble-detector"),
   };
 }
 
@@ -73,7 +78,7 @@ export function llamaServerArgs(assets: MangaTranslatorAssets): string[] {
   ];
 }
 
-export function mangaTranslatorArgs(assets: MangaTranslatorAssets, input: string, output: string, batch: boolean): string[] {
+export function mangaTranslatorArgs(assets: MangaTranslatorAssets, input: string, output: string, batch: boolean, outsideText = false): string[] {
   return [
     assets.main,
     "--input", input,
@@ -93,6 +98,7 @@ export function mangaTranslatorArgs(assets: MangaTranslatorAssets, input: string
     "--max-tokens", "2048",
     "--reasoning-effort", "none",
     "--upscale-method", "none",
+    ...(outsideText ? ["--osb-enable", "--osb-text-free-only", "--osb-inpainting-method", "opencv"] : []),
     "--output-format", "png",
   ];
 }
@@ -117,6 +123,14 @@ export async function validateMangaTranslatorAssets(assets: MangaTranslatorAsset
     requireDirectory(assets.fonts, "MVP_FONT_DIRECTORY_MISSING"),
   ]);
   await mkdir(assets.cache, { recursive: true });
+}
+
+async function validateOutsideTextDetector(assets: MangaTranslatorAssets): Promise<void> {
+  await Promise.all([
+    requireFile(path.join(assets.outsideTextDetector, "config.json"), "MVP_OUTSIDE_TEXT_MODEL_MISSING"),
+    requireFile(path.join(assets.outsideTextDetector, "preprocessor_config.json"), "MVP_OUTSIDE_TEXT_MODEL_MISSING"),
+    requireFile(path.join(assets.outsideTextDetector, "model.safetensors"), "MVP_OUTSIDE_TEXT_MODEL_MISSING"),
+  ]);
 }
 
 async function validateDirectoryTree(current: string): Promise<void> {
@@ -224,6 +238,30 @@ async function countOutputImages(directory: string): Promise<number> {
   return count;
 }
 
+async function collectOutputImages(directory: string, relative = ""): Promise<Array<{ path: string; extension: string }>> {
+  const images: Array<{ path: string; extension: string }> = [];
+  for (const entry of await readdir(path.join(directory, relative), { withFileTypes: true })) {
+    const childRelative = path.join(relative, entry.name);
+    if (entry.isDirectory()) images.push(...await collectOutputImages(directory, childRelative));
+    else if (entry.isFile()) {
+      const extension = path.extname(entry.name).toLowerCase();
+      if (IMAGE_EXTENSIONS.has(extension)) images.push({ path: path.join(directory, childRelative), extension });
+    }
+  }
+  return images.sort((left, right) => naturalCompare(path.relative(directory, left.path), path.relative(directory, right.path)));
+}
+
+export async function createMvpCbz(imagesDirectory: string, cbzPath: string): Promise<number> {
+  const images = await collectOutputImages(imagesDirectory);
+  if (images.length === 0) throw new LocalizerError("MVP_NO_OUTPUT_IMAGES", "Cannot create a CBZ without translated images");
+  const files = await Promise.all(images.map(async (image, index) => ({
+    fileName: `${String(index + 1).padStart(4, "0")}${image.extension === ".jpeg" ? ".jpg" : image.extension}`,
+    bytes: await readFile(image.path),
+  })));
+  await writeExclusive(cbzPath, createCbzBuffer(files));
+  return files.length;
+}
+
 async function consumeFailureList(imagesDirectory: string): Promise<number> {
   const failureFile = path.join(imagesDirectory, "failed_paths.txt");
   const contents = await readFile(failureFile, "utf8").catch(() => undefined);
@@ -247,9 +285,10 @@ function offlineEnvironment(assets: MangaTranslatorAssets): NodeJS.ProcessEnv {
   };
 }
 
-export async function runMvpTranslate(config: LocalizerConfig, options: { inputPath: string; outputParent: string }): Promise<MvpTranslateResult> {
+export async function runMvpTranslate(config: LocalizerConfig, options: { inputPath: string; outputParent: string; outsideText?: boolean }): Promise<MvpTranslateResult> {
   const assets = defaultMangaTranslatorAssets();
   await validateMangaTranslatorAssets(assets);
+  if (options.outsideText) await validateOutsideTextDetector(assets);
   const output = await createUniqueDirectory(options.outputParent, `translation-results-mvp-${safeSlug(path.basename(options.inputPath, path.extname(options.inputPath)))}`);
   const imagesDirectory = path.join(output.directory, "images");
   await mkdir(imagesDirectory);
@@ -267,33 +306,39 @@ export async function runMvpTranslate(config: LocalizerConfig, options: { inputP
       stdio: "ignore",
     });
     await waitForServer(server);
-    await runChild(assets.python, mangaTranslatorArgs(assets, prepared.path, imagesDirectory, prepared.batch), {
+    await runChild(assets.python, mangaTranslatorArgs(assets, prepared.path, imagesDirectory, prepared.batch, options.outsideText), {
       cwd: path.dirname(assets.main),
       env: offlineEnvironment(assets),
     });
     const outputImages = await countOutputImages(imagesDirectory);
     const failedImages = await consumeFailureList(imagesDirectory);
     if (outputImages === 0) throw new LocalizerError("MVP_NO_OUTPUT_IMAGES", "MangaTranslator completed without producing translated images");
+    const cbzPath = path.join(output.directory, "translated.cbz");
+    const packagedImages = await createMvpCbz(imagesDirectory, cbzPath);
+    if (packagedImages !== outputImages) throw new LocalizerError("MVP_CBZ_PAGE_COUNT_MISMATCH", "CBZ page count does not match translated image count");
     report = {
-      schemaVersion: 1,
+      schemaVersion: 3,
       status: failedImages > 0 ? "partial" : "completed",
       startedAt,
       completedAt: new Date().toISOString(),
       inputKind: prepared.kind,
       outputImages,
       failedImages,
+      outsideTextMode: options.outsideText ? "text-free-opencv" : "disabled",
       engine: { pipeline: "MangaTranslator", translator: "Hy-MT2-7B-Q4_K_M", ocr: "manga-ocr" },
+      cbz: "translated.cbz",
     };
   } catch (error) {
     const failure = asLocalizerError(error, "MVP_TRANSLATION_FAILED");
     report = {
-      schemaVersion: 1,
+      schemaVersion: 3,
       status: "failed",
       startedAt,
       completedAt: new Date().toISOString(),
       inputKind: prepared?.kind ?? "unknown",
       outputImages: await countOutputImages(imagesDirectory).catch(() => 0),
       failedImages: await consumeFailureList(imagesDirectory).catch(() => 0),
+      outsideTextMode: options.outsideText ? "text-free-opencv" : "disabled",
       engine: { pipeline: "MangaTranslator", translator: "Hy-MT2-7B-Q4_K_M", ocr: "manga-ocr" },
       errorCode: failure.code,
     };
@@ -306,5 +351,5 @@ export async function runMvpTranslate(config: LocalizerConfig, options: { inputP
   }
   await assertSchema("mvp-report.schema.json", report);
   await writeJsonExclusive(path.join(output.directory, "report.json"), report);
-  return { directory: output.directory, imagesDirectory, report };
+  return { directory: output.directory, imagesDirectory, cbzPath: path.join(output.directory, "translated.cbz"), report };
 }

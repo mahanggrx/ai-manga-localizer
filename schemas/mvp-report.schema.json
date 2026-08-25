@@ -3,15 +3,16 @@
   "$id": "https://local.invalid/schemas/mvp-report.schema.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "status", "startedAt", "completedAt", "inputKind", "outputImages", "failedImages", "engine"],
+  "required": ["schemaVersion", "status", "startedAt", "completedAt", "inputKind", "outputImages", "failedImages", "outsideTextMode", "engine"],
   "properties": {
-    "schemaVersion": { "const": 1 },
+    "schemaVersion": { "const": 3 },
     "status": { "enum": ["completed", "partial", "failed"] },
     "startedAt": { "type": "string", "minLength": 1 },
     "completedAt": { "type": "string", "minLength": 1 },
     "inputKind": { "enum": ["directory", "zip", "cbz", "image", "unknown"] },
     "outputImages": { "type": "integer", "minimum": 0 },
     "failedImages": { "type": "integer", "minimum": 0 },
+    "outsideTextMode": { "enum": ["disabled", "text-free-opencv"] },
     "engine": {
       "type": "object",
       "additionalProperties": false,
@@ -22,6 +23,13 @@
         "ocr": { "const": "manga-ocr" }
       }
     },
+    "cbz": { "const": "translated.cbz" },
     "errorCode": { "type": "string", "minLength": 1 }
-  }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "enum": ["completed", "partial"] } } },
+      "then": { "required": ["cbz"] }
+    }
+  ]
 }

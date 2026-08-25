@@ -351,7 +351,7 @@ Estimated work: one separately authorized three-page owned-process smoke and rev
 
 ### M4 — Controlled translation selection
 
-Status: **M4.0/M4.1 complete; corrected 38-region comparison complete; M4.3A v2.1 96-region residual scoring complete; decision `FAIL` on the catastrophic category-by-length structural-QA gate; no provisional route frozen**
+Status: **complete for the personal MVP: M4.4 selected Hy-MT2 as the provisional default after the canonical 64-region replace-only comparison; this supersedes the earlier M4.3A inability to freeze a route**
 
 Use fixed working-gold OCR so that OCR and rendering failures cannot distort model comparison.
 
@@ -389,6 +389,7 @@ M4.0/M4.1 evidence:
 - The final blind verdict contract provides one pair-level dimension record per region, so candidate-attributed semantic, terminology, refusal/dilution, context, and layout rates remain unidentifiable. The scoring report records that limitation and applies no post-hoc attribution rule or selector.
 - Deterministic scoring read candidate response bodies only in memory for structural QA; it did not emit or log them, and they were not provided to blind reviewers. Reference translations and review overlays were not read.
 - The v2 candidate-attribution reproduction receipt records that both sealed maps had zero bytes read or hashed until all declared input hashes/bytes, read-only/ignored states, freeze manifests/receipts, verdict coverage, and secondary/adjudication scope coverage passed; only then were the maps read, hashed, and used for attribution. It merged adjudication over unadjudicated secondary over primary (157 primary, 12 secondary, 23 adjudication) for all 96 regions. Its six-dimension rates and page-clustered bootstrap are descriptive evidence only; they do not alter the existing catastrophic-strata **FAIL**, create a selector, or freeze a route.
+- M4.4 then used a canonical 64-region replace-only set to answer the narrower personal-MVP decision. Sakura and Hy-MT2 each achieved 62/64 semantic usability with no refusal; Hy-MT2 achieved 63/64 terminology correctness versus Sakura 59/64, while Sakura missed the preregistered paired terminology non-inferiority bound. Hy-MT2 is therefore the provisional personal-MVP translator. This operational choice does not retroactively invalidate the earlier M4.3A result or claim a universal model-quality win.
 
 Goals:
 
@@ -398,11 +399,11 @@ Goals:
 - decide whether a conditional semantic reviewer improves enough cases to justify its cost;
 - lock model identity, quantization, license, and SHA-256 only after the hard gates pass.
 
-Estimated work: **completed for M4.3A v2.1**: the authorized 96-region two-route run, blinded review, unblinding, and preregistered scoring are complete. No M4.3B expansion follows from this hard `FAIL`; any future benchmark requires a fresh preregistration and authorization.
+Estimated work: **complete for V1 personal-MVP selection**. Do not add another translation benchmark before real page output demonstrates a decision-changing failure.
 
 ### M5 — Repair, lettering, and visual QA
 
-Status: **pending**
+Status: **M5-lite is usable in the default mode: a real stratified ten-page run completed 10/10 and ordinary dialogue pages met the personal-reading MVP bar without destructive page changes. The RT-DETR `text_free` plus OpenCV outside-text route also completed 10/10 but produced destructive black blocks on a cover and oversized text on dense pages, so it is experimental and must not be used for a full book**
 
 Use a stratified ten-page set before any full-chapter visual rerun.
 
@@ -416,9 +417,19 @@ Goals:
 
 Estimated work: one GPU experiment task and one visual review task.
 
+Personal-MVP baseline evidence:
+
+- the no-administrator MangaTranslator + Hy-MT2 command completed the fixed three-page input through its public CLI in about 101 seconds;
+- all three PNG outputs were produced, the report status was `completed`, and the local model process and ports were clear afterward;
+- ordinary bubble lettering was readable and showed no obvious overflow in the three pages;
+- artistic SFX remained in the source artwork as intended by the current MVP policy;
+- the official RT-DETR detector was added locally and an opt-in `--outside-text` smoke completed in about 74 seconds. It translated outside-bubble narration and preserved the sampled artistic SFX, but some generated text blocks were visually large or intrusive, so the mode is not the default;
+- a stratified real-page comparison then covered two pages each from ordinary dialogue, dense text, artistic SFX/action, dark/complex, and structural-negative categories. Both modes completed 10/10; the default route preserved covers and artistic text and produced readable dialogue, while the outside-text route caused destructive cover blocks and dense-page overflow. Default mode is therefore the only full-book candidate for the personal MVP;
+- some translated phrasing remains awkward, so the next changes must be driven by real-page review rather than another broad model benchmark.
+
 ### M6 — V1 freeze and chapter acceptance
 
-Status: **pending**
+Status: **first full-chapter operational run completed; personal reading acceptance is pending**
 
 Goals:
 
@@ -430,6 +441,14 @@ Goals:
 - update public documentation to match only the results actually achieved.
 
 Estimated work: one full integration task, followed by one independent review task.
+
+Current evidence:
+
+- the default `translate-mvp` route completed the 126-page representative book on the reference laptop GPU with 126/126 images and zero reported failures in about 25 minutes;
+- sampled pages across covers, ordinary dialogue, action/dark scenes, and the ending remained readable without the destructive structural-page changes seen in the experimental outside-text route;
+- the generated pages were packaged without rerunning models into a 126-page `translated.cbz`, then read back through the repository archive reader with matching first/last page order;
+- dense outside-bubble character introductions remained Japanese and some phrasing remains awkward. These are known personal-MVP limitations, not reasons to resume broad infrastructure or model benchmarking before the user reads the result;
+- the run did not record peak VRAM and is not formal quality acceptance. The next decision evidence is the user's actual reading experience and the specific pages they want corrected.
 
 ## V1 acceptance targets
 
@@ -491,3 +510,5 @@ The repository must not contain:
 4. Do not enter M4.3B solely from this hard `FAIL`; keep the M3.10B three-page owned-process smoke deferred until separately authorized.
 5. M4.4 completed the canonical 64-page replace-only Sakura/Hy run and working review. Both met the absolute MVP gates, but Sakura missed the paired terminology non-inferiority bound; use Hy-MT2 as the provisional personal-MVP primary translator and move to the smallest real end-to-end chapter slice instead of adding more model-selection infrastructure.
 6. The first usable delivery path is now `translate-mvp`: MangaTranslator + the locally installed Hy-MT2 model, with unique outputs and no administrator-only Koharu workaround. Use it for the user's first real chapter experience; improve detection, outside-bubble text, translation, and lettering only from observed failures. Keep the owned Koharu route experimental rather than blocking the MVP on it.
+7. Keep `--outside-text` experimental and do not use it for a full book. The ten-page real comparison showed destructive structural-page false positives; use the default `translate-mvp` route for the first full-book experience and revisit outside text only from specific pages the user identifies as important.
+8. The default route has now completed the representative 126-page book and produced a reader-ready CBZ. Pause speculative pipeline work here: have the user read this artifact, collect concrete bad-page examples, and make only the smallest changes that improve those observed failures.

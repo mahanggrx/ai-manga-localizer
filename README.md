@@ -43,9 +43,10 @@
 ```powershell
 node src/cli.ts translate-mvp C:/manga/chapter-01 --out C:/manga/output
 node src/cli.ts translate-mvp C:/manga/chapter-01.cbz --out C:/manga/output
+node src/cli.ts translate-mvp C:/manga/chapter-01 --out C:/manga/output --outside-text
 ```
 
-结果位于新建的 `translation-results-mvp-*` 目录，其中 `images/` 是逐页 PNG，`report.json` 记录完成、部分完成或失败状态。这个入口以尽快获得可阅读结果为目标；当前主要处理气泡文字，气泡外旁白和艺术字仍可能保留原文。原有 `translate` 命令继续作为实验性 Koharu 质量路线保留。
+结果位于新建的 `translation-results-mvp-*` 目录，其中 `images/` 是逐页 PNG，`translated.cbz` 可直接放进漫画阅读器，`report.json` 记录完成、部分完成或失败状态。默认主要处理气泡文字。`--outside-text` 是实验选项：它会尝试翻译 RT-DETR 识别出的气泡外文字，但真实页面测试中会在封面或结构页产生大块错误修复，当前不要用于整本。原有 `translate` 命令继续作为实验性 Koharu 质量路线保留。
 
 ```powershell
 node src/cli.ts doctor
@@ -59,7 +60,7 @@ node src/cli.ts benchmark C:/manga/golden-private --out C:/manga/benchmark-outpu
 
 ## 输出
 
-`translate-mvp` 的输出只有 `images/` 和不含漫画正文的 `report.json`。
+`translate-mvp` 输出 `images/`、可直接阅读的 `translated.cbz` 和不含漫画正文的 `report.json`。
 
 一次成功或部分成功的翻译会创建新的 `translation-results-*` 目录，绝不覆盖已有文件。目录包含：
 

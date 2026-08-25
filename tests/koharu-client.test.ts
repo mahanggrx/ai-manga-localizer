@@ -118,6 +118,21 @@ test("startup and epoch conflicts fail closed with stable error codes", async ()
   }
 });
 
+test("owned startup waits through bootstrapping and rechecks process identity", async () => {
+  let metaCalls = 0;
+  let identityChecks = 0;
+  const fetchImpl: typeof fetch = async () => {
+    metaCalls += 1;
+    if (metaCalls === 1) return new Response(null, { status: 503 });
+    return new Response(JSON.stringify({ version: "0.61.2" }), { headers: { "content-type": "application/json" } });
+  };
+  const client = new KoharuClient({ ...OWNED_CLIENT_CONFIG, operationTimeoutMs: 1000 }, { fetchImpl, ownedMutationGuard });
+  const meta = await client.waitUntilReady(async () => { identityChecks += 1; });
+  assert.equal(meta.version, "0.61.2");
+  assert.equal(metaCalls, 2);
+  assert.equal(identityChecks, 2);
+});
+
 test("engine selection ignores display names and produced component labels", () => {
   const catalog = {
     ocr: [{ id: "manga-ocr", name: "Manga OCR", produces: ["OcrText"] }],

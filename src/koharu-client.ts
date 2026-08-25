@@ -150,6 +150,19 @@ export class KoharuClient {
     return { ...meta, version, ...(device ? { device } : {}) } as KoharuMeta;
   }
 
+  async waitUntilReady(beforeAttempt?: () => Promise<void>): Promise<KoharuMeta> {
+    const deadline = Date.now() + this.operationTimeoutMs;
+    while (true) {
+      await beforeAttempt?.();
+      try {
+        return await this.getMeta();
+      } catch (error) {
+        if (!(error instanceof LocalizerError) || error.code !== "KOHARU_BOOTSTRAPPING" || Date.now() >= deadline) throw error;
+        await delay(Math.min(250, Math.max(1, deadline - Date.now())));
+      }
+    }
+  }
+
   async getEngines(): Promise<JsonValue> { return await this.json<JsonValue>("engines"); }
   async getConfig(): Promise<JsonObject> { return await this.json<JsonObject>("config"); }
   async getSceneSnapshot(): Promise<KoharuSceneSnapshot> {

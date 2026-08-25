@@ -38,6 +38,15 @@
 
 ## 使用
 
+当前建议先用个人 MVP 路线。它会自动启动本机 Hy-MT2、调用已安装的 MangaTranslator，处理完成后停止模型服务；支持单张图片、图片目录、ZIP 和 CBZ，不需要管理员权限，也不会联网或下载模型：
+
+```powershell
+node src/cli.ts translate-mvp C:/manga/chapter-01 --out C:/manga/output
+node src/cli.ts translate-mvp C:/manga/chapter-01.cbz --out C:/manga/output
+```
+
+结果位于新建的 `translation-results-mvp-*` 目录，其中 `images/` 是逐页 PNG，`report.json` 记录完成、部分完成或失败状态。这个入口以尽快获得可阅读结果为目标；当前主要处理气泡文字，气泡外旁白和艺术字仍可能保留原文。原有 `translate` 命令继续作为实验性 Koharu 质量路线保留。
+
 ```powershell
 node src/cli.ts doctor
 node src/cli.ts doctor --json
@@ -49,6 +58,8 @@ node src/cli.ts benchmark C:/manga/golden-private --out C:/manga/benchmark-outpu
 开启云端文字回退前，必须在配置中设置 `translation.cloudTarget`，并在当次命令中显式加入 `--allow-cloud`。不开该参数时，编排器不会选择云端 target。
 
 ## 输出
+
+`translate-mvp` 的输出只有 `images/` 和不含漫画正文的 `report.json`。
 
 一次成功或部分成功的翻译会创建新的 `translation-results-*` 目录，绝不覆盖已有文件。目录包含：
 

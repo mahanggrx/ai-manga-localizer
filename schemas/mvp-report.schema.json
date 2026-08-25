@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.invalid/schemas/mvp-report.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "status", "startedAt", "completedAt", "inputKind", "outputImages", "failedImages", "engine"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "status": { "enum": ["completed", "partial", "failed"] },
+    "startedAt": { "type": "string", "minLength": 1 },
+    "completedAt": { "type": "string", "minLength": 1 },
+    "inputKind": { "enum": ["directory", "zip", "cbz", "image", "unknown"] },
+    "outputImages": { "type": "integer", "minimum": 0 },
+    "failedImages": { "type": "integer", "minimum": 0 },
+    "engine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pipeline", "translator", "ocr"],
+      "properties": {
+        "pipeline": { "const": "MangaTranslator" },
+        "translator": { "const": "Hy-MT2-7B-Q4_K_M" },
+        "ocr": { "const": "manga-ocr" }
+      }
+    },
+    "errorCode": { "type": "string", "minLength": 1 }
+  }
+}

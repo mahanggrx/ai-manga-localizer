@@ -310,8 +310,7 @@ export async function runTranslate(config: LocalizerConfig, options: TranslateOp
     const layout = ownedLayout;
     if (!processIdentity || !layout) throw new LocalizerError("OWNED_KOHARU_START_FAILED", "Owned Koharu identity or run layout was not established");
     const { meta, engines } = await executeStage(report, checkpoints, "connect-koharu", async () => {
-      await processIdentity.assertIdentity();
-      const meta = await ownedClient.getMeta();
+      const meta = await ownedClient.waitUntilReady(() => processIdentity.assertIdentity());
       if (meta.version.replace(/^v/, "") !== config.koharu.requiredVersion.replace(/^v/, "")) throw new LocalizerError("KOHARU_VERSION_MISMATCH", `Required ${config.koharu.requiredVersion}, found ${meta.version}`);
       const engines = await ownedClient.getEngines();
       report.koharuVersion = meta.version;
@@ -340,8 +339,12 @@ export async function runTranslate(config: LocalizerConfig, options: TranslateOp
     await executeStage(report, checkpoints, "detect-and-primary-ocr", async (item) => {
       await assertHeavyProcessHeadroom(options, item);
       await guard.assertProjectIdentity();
-      const run = await ownedClient.runPipeline({ steps: pipeline.detect });
-      item.warnings.push(...run.warnings.map(() => "KOHARU_PIPELINE_WARNING"));
+      const uploadedPageIds = extractPageIds(await ownedClient.getScene());
+      if (uploadedPageIds.length !== loaded.images.length) throw new LocalizerError("KOHARU_UPLOAD_POPULATION_MISMATCH", "Koharu scene page population differs from the uploaded input population");
+      for (const pageId of uploadedPageIds) {
+        const run = await ownedClient.runPipeline({ steps: pipeline.detect, pages: [pageId] });
+        item.warnings.push(...run.warnings.map(() => "KOHARU_PIPELINE_WARNING"));
+      }
     });
 
     regions = await executeStage(report, checkpoints, "inspect-primary-ocr", async () => {

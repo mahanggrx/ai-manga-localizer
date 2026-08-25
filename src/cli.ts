@@ -5,6 +5,7 @@ import { runBenchmark } from "./benchmark.ts";
 import { loadConfig } from "./config.ts";
 import { runDoctor } from "./doctor.ts";
 import { asLocalizerError, LocalizerError } from "./errors.ts";
+import { runMvpTranslate } from "./mvp-translate.ts";
 import { runTranslate } from "./translate.ts";
 
 const HELP = `manga-localizer - local-first Japanese manga quality orchestrator
@@ -12,9 +13,10 @@ const HELP = `manga-localizer - local-first Japanese manga quality orchestrator
 Usage:
   manga-localizer doctor [--config FILE] [--json]
   manga-localizer benchmark GOLDEN_SET [--out DIRECTORY]
+  manga-localizer translate-mvp INPUT --out DIRECTORY
   manga-localizer translate INPUT --out DIRECTORY [--profile quality-local] [--allow-cloud] [--psd] [--config FILE]
 
-The CLI never downloads models or overwrites existing output. Translation requires owned mode, which starts and verifies an isolated loopback Koharu process.
+The CLI never downloads models or overwrites existing output. translate-mvp uses the installed MangaTranslator + Hy-MT2 local path; translate uses the experimental owned Koharu path.
 `;
 
 interface ParsedArgs {
@@ -100,6 +102,17 @@ async function main(): Promise<void> {
       psd: flag(args, "--psd"),
     });
     process.stdout.write(`Translation ${result.report.status}: ${result.directory}\n`);
+    return;
+  }
+  if (args.command === "translate-mvp") {
+    if (args.positionals.length !== 1) throw new LocalizerError("CLI_ARGUMENTS_INVALID", "translate-mvp requires exactly one INPUT path");
+    const outputParent = option(args, "--out");
+    if (!outputParent) throw new LocalizerError("CLI_OUTPUT_REQUIRED", "translate-mvp requires --out DIRECTORY");
+    const result = await runMvpTranslate(config, {
+      inputPath: path.resolve(args.positionals[0]),
+      outputParent: path.resolve(outputParent),
+    });
+    process.stdout.write(`MVP translation ${result.report.status}: ${result.imagesDirectory}\n`);
     return;
   }
   throw new LocalizerError("CLI_COMMAND_UNKNOWN", `Unknown command: ${args.command}`);

@@ -1,24 +1,27 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { constants } from "node:fs";
 import { copyFile, lstat, mkdir, readdir, readFile, stat, unlink } from "node:fs/promises";
+import type { Server } from "node:http";
 import { createServer } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createCbzBuffer, detectMediaType, loadInputImages, naturalCompare } from "./archive.ts";
 import { LocalizerError, asLocalizerError } from "./errors.ts";
 import { createUniqueDirectory, safeSlug, writeExclusive, writeJsonExclusive } from "./file-utils.ts";
+import { startHybridTranslationProxy, HY_MODEL_ALIAS, SAKURA_MODEL_ALIAS, type HybridProxyMetrics } from "./hybrid-translation-proxy.ts";
 import { assertSchema } from "./schema.ts";
 import type { LocalizerConfig } from "./types.ts";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const HOST = "127.0.0.1";
 const PORT = 8080;
-const MODEL_ALIAS = "hy-mt2-local";
+const ROUTER_PORT = 8081;
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
 
 export interface MangaTranslatorAssets {
   llamaServer: string;
   model: string;
+  fallbackModel: string;
   python: string;
   main: string;
   models: string;
@@ -28,7 +31,7 @@ export interface MangaTranslatorAssets {
 }
 
 export interface MvpTranslateReport {
-  schemaVersion: 3;
+  schemaVersion: 4;
   status: "completed" | "partial" | "failed";
   startedAt: string;
   completedAt: string;
@@ -36,7 +39,9 @@ export interface MvpTranslateReport {
   outputImages: number;
   failedImages: number;
   outsideTextMode: "disabled" | "text-free-opencv";
-  engine: { pipeline: "MangaTranslator"; translator: "Hy-MT2-7B-Q4_K_M"; ocr: "manga-ocr" };
+  engine: { pipeline: "MangaTranslator"; translator: "Hy-MT2-7B-Q4_K_M"; fallbackTranslator: "Sakura-GalTransl-7B-v3.7-IQ4_XS"; ocr: "manga-ocr" };
+  sakuraFallbackRegions: number;
+  sakuraFallbackFailures: number;
   cbz?: "translated.cbz";
   errorCode?: string;
 }
@@ -50,9 +55,11 @@ export interface MvpTranslateResult {
 
 export function defaultMangaTranslatorAssets(root = PROJECT_ROOT): MangaTranslatorAssets {
   const mangaTranslator = path.join(root, ".local", "manga-translator", "MangaTranslator");
+  const localAppData = process.env.LOCALAPPDATA ?? path.join(root, ".localizer-cache");
   return {
     llamaServer: path.join(root, ".local", "llama-server", "llama-server.exe"),
     model: path.join(root, ".localizer-cache", "models", "tencent--Hy-MT2-7B-GGUF", "ab8472660ac61fac25f1af43fac2599d52a8a775", "Hy-MT2-7B-Q4_K_M.gguf"),
+    fallbackModel: path.join(localAppData, "Koharu", "models", "huggingface", "models--SakuraLLM--Sakura-GalTransl-7B-v3.7", "blobs", "8f515bf4769f279a7fcf43e57446455a9d4de7f65b1bc9eddee76717e1ff7919"),
     python: path.join(mangaTranslator, "runtime", "python.exe"),
     main: path.join(mangaTranslator, "main.py"),
     models: path.join(mangaTranslator, "models"),
@@ -62,21 +69,38 @@ export function defaultMangaTranslatorAssets(root = PROJECT_ROOT): MangaTranslat
   };
 }
 
-export function llamaServerArgs(assets: MangaTranslatorAssets): string[] {
+export function llamaServerArgs(_assets: MangaTranslatorAssets, presetPath: string): string[] {
   return [
-    "-m", assets.model,
-    "--alias", MODEL_ALIAS,
+    "--models-preset", presetPath,
+    "--models-max", "1",
     "--host", HOST,
-    "--port", String(PORT),
+    "--port", String(ROUTER_PORT),
     "--no-webui",
-    "--n-gpu-layers", "99",
-    "--ctx-size", "8192",
-    "--parallel", "1",
-    "--no-cont-batching",
-    "--flash-attn", "auto",
-    "--reasoning-format", "none",
   ];
 }
+
+export function mangaTranslatorModelPreset(assets: MangaTranslatorAssets): string {
+  const clean = (value: string) => path.resolve(value).replaceAll("\\", "/");
+  return [
+    "version = 1",
+    "",
+    "[*]",
+    "ctx-size = 8192",
+    "n-gpu-layers = 99",
+    "parallel = 1",
+    "flash-attn = auto",
+    "",
+    `[${HY_MODEL_ALIAS}]`,
+    `model = ${clean(assets.model)}`,
+    "load-on-startup = true",
+    "",
+    `[${SAKURA_MODEL_ALIAS}]`,
+    `model = ${clean(assets.fallbackModel)}`,
+    "",
+  ].join("\n");
+}
+
+const BASE_TRANSLATION_INSTRUCTIONS = "For Simplified Chinese dialogue, never output Latin letters unless the source itself contains those exact Latin letters. Translate Japanese katakana loanwords by meaning into the established Chinese term; do not phonetically transliterate them. Translate ordinary Latin-script words into Chinese and retain only source-written short acronyms or proper names. Use Chinese punctuation and write ellipses as ……; never use consecutive ASCII periods for an ellipsis.";
 
 export function mangaTranslatorArgs(assets: MangaTranslatorAssets, input: string, output: string, batch: boolean, outsideText = false): string[] {
   return [
@@ -87,7 +111,7 @@ export function mangaTranslatorArgs(assets: MangaTranslatorAssets, input: string
     "--parallel-requests", "1",
     "--provider", "OpenAI-Compatible",
     "--openai-compatible-url", `http://${HOST}:${PORT}/v1`,
-    "--model-name", MODEL_ALIAS,
+    "--model-name", HY_MODEL_ALIAS,
     "--models", assets.models,
     "--font-dir", assets.fonts,
     "--input-language", "Japanese",
@@ -97,10 +121,17 @@ export function mangaTranslatorArgs(assets: MangaTranslatorAssets, input: string
     "--temperature", "0.3",
     "--max-tokens", "2048",
     "--reasoning-effort", "none",
+    "--special-instructions",
+    BASE_TRANSLATION_INSTRUCTIONS,
     "--upscale-method", "none",
+    "--vertical-font-size-mult", "1.15",
     ...(outsideText ? ["--osb-enable", "--osb-text-free-only", "--osb-inpainting-method", "opencv"] : []),
     "--output-format", "png",
   ];
+}
+
+export function mangaTranslatorOutputTarget(imagesDirectory: string, batch: boolean): string {
+  return batch ? imagesDirectory : path.join(imagesDirectory, "translated");
 }
 
 async function requireFile(filePath: string, code: string): Promise<void> {
@@ -117,6 +148,7 @@ export async function validateMangaTranslatorAssets(assets: MangaTranslatorAsset
   await Promise.all([
     requireFile(assets.llamaServer, "MVP_LLAMA_SERVER_MISSING"),
     requireFile(assets.model, "MVP_TRANSLATION_MODEL_MISSING"),
+    requireFile(assets.fallbackModel, "MVP_FALLBACK_MODEL_MISSING"),
     requireFile(assets.python, "MVP_PYTHON_RUNTIME_MISSING"),
     requireFile(assets.main, "MVP_MANGA_TRANSLATOR_MISSING"),
     requireDirectory(assets.models, "MVP_MANGA_MODELS_MISSING"),
@@ -175,14 +207,14 @@ async function loadInputImagesFromSingleFile(filePath: string): Promise<void> {
   detectMediaType(path.basename(filePath), await readFile(filePath));
 }
 
-async function waitForServer(child: ChildProcess, timeoutMs = 5 * 60_000): Promise<void> {
+async function waitForServer(child: ChildProcess, port: number, timeoutMs = 5 * 60_000): Promise<void> {
   let spawnError = false;
   child.once("error", () => { spawnError = true; });
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (spawnError || child.exitCode !== null || child.signalCode !== null) throw new LocalizerError("MVP_LLAMA_SERVER_EXITED", "The local translation server exited during startup");
     try {
-      const response = await fetch(`http://${HOST}:${PORT}/health`, { redirect: "error", signal: AbortSignal.timeout(3_000) });
+      const response = await fetch(`http://${HOST}:${port}/health`, { redirect: "error", signal: AbortSignal.timeout(3_000) });
       await response.body?.cancel().catch(() => undefined);
       if (response.ok) return;
     } catch {
@@ -219,13 +251,18 @@ async function stopChild(child: ChildProcess | undefined): Promise<void> {
   }
 }
 
-async function assertPortAvailable(): Promise<void> {
+async function assertPortAvailable(port: number): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const probe = createServer();
     probe.unref();
-    probe.once("error", () => reject(new LocalizerError("MVP_PORT_IN_USE", `Loopback port ${PORT} is already in use`)));
-    probe.listen(PORT, HOST, () => probe.close((error) => error ? reject(error) : resolve()));
+    probe.once("error", () => reject(new LocalizerError("MVP_PORT_IN_USE", `Loopback port ${port} is already in use`)));
+    probe.listen(port, HOST, () => probe.close((error) => error ? reject(error) : resolve()));
   });
+}
+
+async function closeServer(server: Server | undefined): Promise<void> {
+  if (!server?.listening) return;
+  await new Promise<void>((resolve) => server.close(() => resolve()));
 }
 
 async function countOutputImages(directory: string): Promise<number> {
@@ -295,18 +332,24 @@ export async function runMvpTranslate(config: LocalizerConfig, options: { inputP
   const startedAt = new Date().toISOString();
   let prepared: Awaited<ReturnType<typeof prepareInput>> | undefined;
   let server: ChildProcess | undefined;
+  let proxy: { server: Server; metrics: HybridProxyMetrics } | undefined;
+  let presetPath: string | undefined;
   let report: MvpTranslateReport | undefined;
   try {
     prepared = await prepareInput(options.inputPath, output.directory, config);
-    await assertPortAvailable();
-    server = spawn(assets.llamaServer, llamaServerArgs(assets), {
+    await Promise.all([assertPortAvailable(PORT), assertPortAvailable(ROUTER_PORT)]);
+    presetPath = path.join(output.directory, "models.ini");
+    await writeExclusive(presetPath, mangaTranslatorModelPreset(assets));
+    server = spawn(assets.llamaServer, llamaServerArgs(assets, presetPath), {
       cwd: path.dirname(assets.llamaServer),
       env: offlineEnvironment(assets),
       windowsHide: true,
       stdio: "ignore",
     });
-    await waitForServer(server);
-    await runChild(assets.python, mangaTranslatorArgs(assets, prepared.path, imagesDirectory, prepared.batch, options.outsideText), {
+    await waitForServer(server, ROUTER_PORT);
+    proxy = await startHybridTranslationProxy({ upstreamBaseUrl: `http://${HOST}:${ROUTER_PORT}/`, port: PORT });
+    const translatorOutput = mangaTranslatorOutputTarget(imagesDirectory, prepared.batch);
+    await runChild(assets.python, mangaTranslatorArgs(assets, prepared.path, translatorOutput, prepared.batch, options.outsideText), {
       cwd: path.dirname(assets.main),
       env: offlineEnvironment(assets),
     });
@@ -317,7 +360,7 @@ export async function runMvpTranslate(config: LocalizerConfig, options: { inputP
     const packagedImages = await createMvpCbz(imagesDirectory, cbzPath);
     if (packagedImages !== outputImages) throw new LocalizerError("MVP_CBZ_PAGE_COUNT_MISMATCH", "CBZ page count does not match translated image count");
     report = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       status: failedImages > 0 ? "partial" : "completed",
       startedAt,
       completedAt: new Date().toISOString(),
@@ -325,13 +368,15 @@ export async function runMvpTranslate(config: LocalizerConfig, options: { inputP
       outputImages,
       failedImages,
       outsideTextMode: options.outsideText ? "text-free-opencv" : "disabled",
-      engine: { pipeline: "MangaTranslator", translator: "Hy-MT2-7B-Q4_K_M", ocr: "manga-ocr" },
+      engine: { pipeline: "MangaTranslator", translator: "Hy-MT2-7B-Q4_K_M", fallbackTranslator: "Sakura-GalTransl-7B-v3.7-IQ4_XS", ocr: "manga-ocr" },
+      sakuraFallbackRegions: proxy.metrics.fallbackRegions,
+      sakuraFallbackFailures: proxy.metrics.fallbackFailures,
       cbz: "translated.cbz",
     };
   } catch (error) {
     const failure = asLocalizerError(error, "MVP_TRANSLATION_FAILED");
     report = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       status: "failed",
       startedAt,
       completedAt: new Date().toISOString(),
@@ -339,14 +384,18 @@ export async function runMvpTranslate(config: LocalizerConfig, options: { inputP
       outputImages: await countOutputImages(imagesDirectory).catch(() => 0),
       failedImages: await consumeFailureList(imagesDirectory).catch(() => 0),
       outsideTextMode: options.outsideText ? "text-free-opencv" : "disabled",
-      engine: { pipeline: "MangaTranslator", translator: "Hy-MT2-7B-Q4_K_M", ocr: "manga-ocr" },
+      engine: { pipeline: "MangaTranslator", translator: "Hy-MT2-7B-Q4_K_M", fallbackTranslator: "Sakura-GalTransl-7B-v3.7-IQ4_XS", ocr: "manga-ocr" },
+      sakuraFallbackRegions: proxy?.metrics.fallbackRegions ?? 0,
+      sakuraFallbackFailures: proxy?.metrics.fallbackFailures ?? 0,
       errorCode: failure.code,
     };
     await assertSchema("mvp-report.schema.json", report);
     await writeJsonExclusive(path.join(output.directory, "report.json"), report);
     throw new LocalizerError(failure.code, `${failure.message}. Results: ${output.directory}`, { cause: failure });
   } finally {
+    await closeServer(proxy?.server);
     await stopChild(server);
+    if (presetPath) await unlink(presetPath).catch(() => undefined);
     if (prepared?.temporary) await unlink(prepared.temporary).catch(() => undefined);
   }
   await assertSchema("mvp-report.schema.json", report);

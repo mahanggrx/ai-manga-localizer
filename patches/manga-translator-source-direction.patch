@@ -1,0 +1,1162 @@
+diff --git a/core/pipeline.py b/core/pipeline.py
+index cd083fb..eb037b3 100644
+--- a/core/pipeline.py
++++ b/core/pipeline.py
+@@ -7,6 +7,7 @@ import threading
+ import time
+ from collections import OrderedDict
+ from concurrent.futures import ThreadPoolExecutor
++from dataclasses import replace
+ from pathlib import Path
+ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
+ 
+@@ -63,6 +64,347 @@ if TYPE_CHECKING:
+ ENABLE_COMPONENT_ORDER_DEBUG = False
+ PREVIOUS_CONTEXT_CACHE_MAX_SIZE = 32
+ NATURAL_SORT_TOKEN_RE = re.compile(r"(\d+)")
++TEXT_COLLISION_RETRY_SCALES = (0.88, 0.76, 0.64)
++
++
++def _rendered_text_mask(
++    base_image: Image.Image,
++    rendered_image: Image.Image,
++    bbox: Tuple[int, int, int, int],
++) -> np.ndarray:
++    """Return pixels changed by one isolated text render."""
++    if base_image.size != rendered_image.size:
++        raise RenderingError("Rendered text layer size changed unexpectedly")
++    width, height = base_image.size
++    x1 = max(0, min(width, int(math.floor(bbox[0]))))
++    y1 = max(0, min(height, int(math.floor(bbox[1]))))
++    x2 = max(x1, min(width, int(math.ceil(bbox[2]))))
++    y2 = max(y1, min(height, int(math.ceil(bbox[3]))))
++    mask = np.zeros((height, width), dtype=np.uint8)
++    if x2 <= x1 or y2 <= y1:
++        return mask
++    base_crop = np.asarray(base_image.crop((x1, y1, x2, y2)).convert("RGBA"))
++    rendered_crop = np.asarray(
++        rendered_image.crop((x1, y1, x2, y2)).convert("RGBA")
++    )
++    changed = np.any(cv2.absdiff(rendered_crop, base_crop) > 1, axis=2)
++    mask[y1:y2, x1:x2] = changed.astype(np.uint8)
++    return mask
++
++
++def _text_collision_pixels(candidate: np.ndarray, occupied: np.ndarray) -> int:
++    """Count collisions, including a small readability margin around glyphs."""
++    if candidate.shape != occupied.shape:
++        raise RenderingError("Rendered text occupancy shape mismatch")
++    kernel = np.ones((3, 3), dtype=np.uint8)
++    expanded_candidate = cv2.dilate(candidate, kernel, iterations=1)
++    expanded_occupied = cv2.dilate(occupied, kernel, iterations=1)
++    return int(np.count_nonzero(expanded_candidate & expanded_occupied))
++
++
++def _composite_text_layer(
++    page_image: Image.Image, layer_image: Image.Image, layer_mask: np.ndarray
++) -> Image.Image:
++    """Composite only the pixels produced by an isolated text render."""
++    result = page_image.copy()
++    mask_image = Image.fromarray((layer_mask * 255).astype(np.uint8))
++    result.paste(layer_image.convert(result.mode), (0, 0), mask_image)
++    return result
++
++
++def _scaled_collision_config(config: RenderingConfig, scale: float) -> RenderingConfig:
++    retry_max = max(4, int(round(config.max_font_size * scale)))
++    retry_min = max(4, min(config.min_font_size, retry_max))
++    return replace(config, min_font_size=retry_min, max_font_size=retry_max)
++
++
++def _mask_overlap_share(first: Any, second: Any) -> float:
++    try:
++        first_mask = np.asarray(first) > 0
++        second_mask = np.asarray(second) > 0
++    except Exception:
++        return 0.0
++    if first_mask.shape != second_mask.shape or first_mask.ndim != 2:
++        return 0.0
++    smaller = min(int(np.count_nonzero(first_mask)), int(np.count_nonzero(second_mask)))
++    if smaller <= 0:
++        return 0.0
++    return float(np.count_nonzero(first_mask & second_mask)) / smaller
++
++
++def _bbox_key(value: Any) -> Optional[Tuple[int, int, int, int]]:
++    try:
++        box = tuple(int(round(float(item))) for item in value)
++    except (TypeError, ValueError):
++        return None
++    return box if len(box) == 4 else None
++
++
++def _union_bbox(boxes: List[Tuple[int, int, int, int]]) -> Tuple[int, int, int, int]:
++    return (
++        min(box[0] for box in boxes),
++        min(box[1] for box in boxes),
++        max(box[2] for box in boxes),
++        max(box[3] for box in boxes),
++    )
++
++
++def _merge_shared_bubble_render_items(
++    bubbles: List[Dict[str, Any]],
++    translations: List[str],
++    render_info_map: Dict[Tuple[int, int, int, int], Dict[str, Any]],
++) -> List[Tuple[Dict[str, Any], str]]:
++    """Merge text regions whose detections refer to the same speech bubble."""
++    parents = list(range(len(bubbles)))
++
++    def find(index: int) -> int:
++        while parents[index] != index:
++            parents[index] = parents[parents[index]]
++            index = parents[index]
++        return index
++
++    def union(first: int, second: int) -> None:
++        first_root = find(first)
++        second_root = find(second)
++        if first_root != second_root:
++            parents[second_root] = first_root
++
++    for first_index, first_bubble in enumerate(bubbles):
++        if first_bubble.get("is_outside_text", False):
++            continue
++        first_box = _bbox_key(first_bubble.get("bbox", ()))
++        first_info = render_info_map.get(first_box)
++        if first_box is None or not first_info:
++            continue
++        for second_index in range(first_index + 1, len(bubbles)):
++            second_bubble = bubbles[second_index]
++            if second_bubble.get("is_outside_text", False):
++                continue
++            second_box = _bbox_key(second_bubble.get("bbox", ()))
++            second_info = render_info_map.get(second_box)
++            if second_box is None or not second_info:
++                continue
++            first_neighbors = {
++                neighbor_box
++                for neighbor_box in (
++                    _bbox_key(value)
++                    for value in first_bubble.get("conjoined_neighbor_bboxes") or ()
++                )
++                if neighbor_box is not None
++            }
++            second_neighbors = {
++                neighbor_box
++                for neighbor_box in (
++                    _bbox_key(value)
++                    for value in second_bubble.get("conjoined_neighbor_bboxes") or ()
++                )
++                if neighbor_box is not None
++            }
++            explicit_conjoined_match = (
++                second_box in first_neighbors or first_box in second_neighbors
++            )
++            cleaned_masks_match = (
++                _mask_overlap_share(first_info.get("mask"), second_info.get("mask"))
++                >= 0.50
++            )
++            base_masks_overlap = (
++                _mask_overlap_share(
++                    first_info.get("base_mask"), second_info.get("base_mask")
++                )
++                > 0.0
++            )
++            if explicit_conjoined_match or cleaned_masks_match or base_masks_overlap:
++                union(first_index, second_index)
++
++    grouped: "OrderedDict[int, List[int]]" = OrderedDict()
++    for index in range(len(bubbles)):
++        grouped.setdefault(find(index), []).append(index)
++
++    render_items: List[Tuple[Dict[str, Any], str]] = []
++    shared_group_number = 0
++    for indices in grouped.values():
++        if len(indices) == 1:
++            index = indices[0]
++            render_items.append((bubbles[index], translations[index]))
++            continue
++
++        # Keep each detected text block in its own geometry.  A conjoined
++        # relation is a typography/collision group, not permission to invent
++        # a rectangular union bubble: the union can extend into page artwork.
++        group_id = f"conjoined-{shared_group_number}"
++        shared_group_number += 1
++        for index in indices:
++            shared_bubble = dict(bubbles[index])
++            shared_bubble["_shared_group_id"] = group_id
++            shared_bubble["_shared_group_size"] = len(indices)
++            render_items.append((shared_bubble, translations[index]))
++    return render_items
++
++
++def _source_text_is_vertical(render_info: Optional[Dict[str, Any]]) -> bool:
++    source_text_bbox = render_info.get("text_bbox") if render_info else None
++    if not source_text_bbox or len(source_text_bbox) != 4:
++        return False
++    source_text_width = max(0, source_text_bbox[2] - source_text_bbox[0])
++    source_text_height = max(0, source_text_bbox[3] - source_text_bbox[1])
++    return source_text_width > 0 and source_text_height >= source_text_width * 1.15
++
++
++def _shared_group_font_size(
++    group_items: List[Tuple[Dict[str, Any], str]],
++    page_render_base: Image.Image,
++    render_info_map: Dict[Tuple[int, int, int, int], Dict[str, Any]],
++    render_config: RenderingConfig,
++    font_dir: str,
++    verbose: bool,
++) -> Optional[int]:
++    """Find a common fitted size that also separates all group text masks."""
++    fitted_sizes: List[int] = []
++    render_members: List[
++        Tuple[
++            str,
++            Tuple[int, int, int, int],
++            Optional[np.ndarray],
++            Tuple[int, int, int],
++            Optional[Tuple[int, int, int]],
++            bool,
++        ]
++    ] = []
++    for group_index, (group_bubble, group_text) in enumerate(group_items):
++        if not group_text or group_bubble.get("is_outside_text", False):
++            continue
++        group_bbox = _bbox_key(group_bubble.get("bbox", ()))
++        if group_bbox is None:
++            continue
++        group_info = group_bubble.get("_render_info") or render_info_map.get(
++            group_bbox
++        )
++        group_mask = group_info.get("mask") if group_info else None
++        group_color = (
++            group_info.get("color", (255, 255, 255))
++            if group_info
++            else (255, 255, 255)
++        )
++        group_text_color = None
++        if group_info and group_info.get("text_color_bgr"):
++            bgr = group_info["text_color_bgr"]
++            group_text_color = (bgr[2], bgr[1], bgr[0])
++        try:
++            probe = render_text_skia(
++                pil_image=page_render_base,
++                text=group_text,
++                bbox=group_bbox,
++                font_dir=font_dir,
++                cleaned_mask=group_mask,
++                bubble_color_bgr=group_color,
++                config=render_config,
++                verbose=verbose,
++                bubble_id=f"shared-{group_index}",
++                rotation_deg=0.0,
++                vertical_stack=_source_text_is_vertical(group_info),
++                text_color_rgb=group_text_color,
++                raise_on_safe_error=False,
++                layout_only=True,
++            )
++        except Exception:
++            continue
++        font_size = probe.info.get("font_size")
++        if isinstance(font_size, (int, float)) and font_size > 0:
++            fitted_sizes.append(int(round(font_size)))
++            render_members.append(
++                (
++                    group_text,
++                    group_bbox,
++                    group_mask,
++                    group_color,
++                    group_text_color,
++                    _source_text_is_vertical(group_info),
++                )
++            )
++
++    if not fitted_sizes or not render_members:
++        return None
++
++    common_font_size = min(fitted_sizes)
++
++    def _group_collision_pixels(font_size: int) -> Optional[int]:
++        occupied = np.zeros(
++            (page_render_base.height, page_render_base.width), dtype=np.uint8
++        )
++        total_collision = 0
++        for member_index, (
++            member_text,
++            member_bbox,
++            member_mask,
++            member_color,
++            member_text_color,
++            member_vertical_stack,
++        ) in enumerate(render_members):
++            size_multiplier = (
++                render_config.vertical_font_size_mult
++                if member_vertical_stack
++                else 1.0
++            )
++            member_size = max(
++                render_config.min_font_size,
++                min(
++                    render_config.max_font_size,
++                    int(round(font_size / max(size_multiplier, 0.1))),
++                ),
++            )
++            member_config = replace(
++                render_config,
++                min_font_size=member_size,
++                max_font_size=member_size,
++            )
++            try:
++                isolated_layer = render_text_skia(
++                    pil_image=page_render_base,
++                    text=member_text,
++                    bbox=member_bbox,
++                    font_dir=font_dir,
++                    cleaned_mask=member_mask,
++                    bubble_color_bgr=member_color,
++                    config=member_config,
++                    verbose=verbose,
++                    bubble_id=f"shared-collision-{member_index}",
++                    rotation_deg=0.0,
++                    vertical_stack=member_vertical_stack,
++                    text_color_rgb=member_text_color,
++                    raise_on_safe_error=False,
++                )
++            except Exception:
++                return None
++            member_occupancy = _rendered_text_mask(
++                page_render_base, isolated_layer, member_bbox
++            )
++            total_collision += _text_collision_pixels(member_occupancy, occupied)
++            occupied |= member_occupancy
++        return total_collision
++
++    best_font_size = common_font_size
++    best_collision: Optional[int] = None
++    seen_sizes = set()
++    for collision_scale in (1.0, *TEXT_COLLISION_RETRY_SCALES):
++        candidate_font_size = max(1, int(round(common_font_size * collision_scale)))
++        if candidate_font_size in seen_sizes:
++            continue
++        seen_sizes.add(candidate_font_size)
++        collision_pixels = _group_collision_pixels(candidate_font_size)
++        if collision_pixels is None:
++            continue
++        if collision_pixels == 0:
++            if candidate_font_size != common_font_size:
++                log_message(
++                    "Resolved conjoined text collision by shrinking the whole group",
++                    verbose=verbose,
++                    always_print=True,
++                )
++            return candidate_font_size
++        if best_collision is None or collision_pixels < best_collision:
++            best_collision = collision_pixels
++            best_font_size = candidate_font_size
++    return best_font_size
+ 
+ 
+ def _should_overlap_llm_with_inpaint(config: MangaTranslatorConfig) -> bool:
+@@ -1546,12 +1785,32 @@ def translate_and_render(
+                 }
+                 log_message("Rendering translations...", verbose=verbose)
+                 if len(translated_texts) == len(sorted_bubble_data):
++                    render_items = _merge_shared_bubble_render_items(
++                        sorted_bubble_data,
++                        translated_texts,
++                        bubble_render_info_map,
++                    )
++                    page_render_base = pil_cleaned_image.copy()
++                    occupied_text_mask = np.zeros(
++                        (pil_cleaned_image.height, pil_cleaned_image.width),
++                        dtype=np.uint8,
++                    )
++                    shared_group_items: Dict[
++                        str, List[Tuple[Dict[str, Any], str]]
++                    ] = {}
++                    for render_item in render_items:
++                        shared_group_id = render_item[0].get("_shared_group_id")
++                        if shared_group_id:
++                            shared_group_items.setdefault(shared_group_id, []).append(
++                                render_item
++                            )
++                    shared_group_font_sizes: Dict[str, int] = {}
+                     invalid_translation_values = {
+                         "[OCR FAILED]",
+                         "[Empty response / no content]",
+                     }
+-                    for i, bubble in enumerate(sorted_bubble_data):
+-                        bubble["translation"] = translated_texts[i]
++                    for i, (bubble, translated_text) in enumerate(render_items):
++                        bubble["translation"] = translated_text
+                         bbox = bubble["bbox"]
+                         text = bubble.get("translation", "")
+                         is_outside_text = bubble.get("is_outside_text", False)
+@@ -1646,7 +1905,7 @@ def translate_and_render(
+                             max_font = main_max_font
+                             line_spacing = config.rendering.line_spacing_mult
+                             use_ligs = config.rendering.use_ligatures
+-                            render_info = bubble_render_info_map.get(tuple(bbox))
++                            render_info = bubble.get("_render_info") or bubble_render_info_map.get(tuple(bbox))
+                             bubble_color_bgr = (255, 255, 255)
+                             cleaned_mask = None
+                             base_mask = None
+@@ -1664,8 +1923,7 @@ def translate_and_render(
+                                         text_color_bgr_val[1],
+                                         text_color_bgr_val[0],
+                                     )
+-                            # No rotation/stacking for regular bubbles
+-                            vertical_stack = False
++                            vertical_stack = _source_text_is_vertical(render_info)
+                             rotation_deg = 0.0
+ 
+                         # Latin languages use hyphenation; Korean/Thai use
+@@ -1723,6 +1981,44 @@ def translate_and_render(
+                                 else config.rendering.vertical_font_size_mult
+                             ),
+                         )
++                        shared_group_id = bubble.get("_shared_group_id")
++                        shared_group_has_common_size = False
++                        if shared_group_id:
++                            if shared_group_id not in shared_group_font_sizes:
++                                shared_font_size = _shared_group_font_size(
++                                    shared_group_items[shared_group_id],
++                                    page_render_base,
++                                    bubble_render_info_map,
++                                    render_config,
++                                    font_dir,
++                                    verbose,
++                                )
++                                if shared_font_size is not None:
++                                    shared_group_font_sizes[shared_group_id] = (
++                                        shared_font_size
++                                    )
++                            shared_font_size = shared_group_font_sizes.get(
++                                shared_group_id
++                            )
++                            if shared_font_size is not None:
++                                shared_group_has_common_size = True
++                                size_multiplier = (
++                                    render_config.vertical_font_size_mult
++                                    if vertical_stack
++                                    else 1.0
++                                )
++                                common_size = max(
++                                    render_config.min_font_size,
++                                    min(
++                                        render_config.max_font_size,
++                                        int(round(shared_font_size / size_multiplier)),
++                                    ),
++                                )
++                                render_config = replace(
++                                    render_config,
++                                    min_font_size=common_size,
++                                    max_font_size=common_size,
++                                )
+                         success = False
+                         if is_outside_text:
+                             try:
+@@ -1822,7 +2118,7 @@ def translate_and_render(
+                         else:
+                             try:
+                                 rendered_image = render_text_skia(
+-                                    pil_image=pil_cleaned_image,
++                                    pil_image=page_render_base,
+                                     text=text,
+                                     bbox=bbox,
+                                     font_dir=font_dir,
+@@ -1909,7 +2205,7 @@ def translate_and_render(
+ 
+                                     try:
+                                         rendered_image = render_text_skia(
+-                                            pil_image=pil_cleaned_image,
++                                            pil_image=page_render_base,
+                                             text=text,
+                                             bbox=bbox,
+                                             font_dir=font_dir,
+@@ -1947,7 +2243,7 @@ def translate_and_render(
+                                     )
+                                     try:
+                                         rendered_image = render_text_skia(
+-                                            pil_image=pil_cleaned_image,
++                                            pil_image=page_render_base,
+                                             text=text,
+                                             bbox=bbox,
+                                             font_dir=font_dir,
+@@ -1975,6 +2271,78 @@ def translate_and_render(
+                                 rendered_image = pil_cleaned_image
+                                 success = False
+ 
++                        if success and not is_outside_text:
++                            best_layer = rendered_image
++                            best_mask = _rendered_text_mask(
++                                page_render_base, rendered_image, tuple(bbox)
++                            )
++                            best_collision = _text_collision_pixels(
++                                best_mask, occupied_text_mask
++                            )
++                            if best_collision and not shared_group_has_common_size:
++                                for collision_scale in TEXT_COLLISION_RETRY_SCALES:
++                                    retry_config = _scaled_collision_config(
++                                        render_config, collision_scale
++                                    )
++                                    try:
++                                        retry_layer = render_text_skia(
++                                            pil_image=page_render_base,
++                                            text=text,
++                                            bbox=bbox,
++                                            font_dir=font_dir,
++                                            cleaned_mask=cleaned_mask,
++                                            bubble_color_bgr=bubble_color_bgr,
++                                            config=retry_config,
++                                            verbose=verbose,
++                                            bubble_id=str(i + 1),
++                                            rotation_deg=rotation_deg,
++                                            vertical_stack=vertical_stack,
++                                            text_color_rgb=text_color_rgb,
++                                            raise_on_safe_error=False,
++                                        )
++                                    except (
++                                        RenderingError,
++                                        FontError,
++                                        ImageProcessingError,
++                                    ):
++                                        continue
++                                    retry_mask = _rendered_text_mask(
++                                        page_render_base, retry_layer, tuple(bbox)
++                                    )
++                                    retry_collision = _text_collision_pixels(
++                                        retry_mask, occupied_text_mask
++                                    )
++                                    if retry_collision < best_collision:
++                                        best_layer = retry_layer
++                                        best_mask = retry_mask
++                                        best_collision = retry_collision
++                                    if retry_collision == 0:
++                                        break
++                                if best_collision:
++                                    log_message(
++                                        "Rendered text regions still touch after collision retries",
++                                        verbose=verbose,
++                                        always_print=True,
++                                    )
++                                else:
++                                    log_message(
++                                        "Resolved cross-region text collision by shrinking the later region",
++                                        verbose=verbose,
++                                    )
++                            elif best_collision:
++                                # A conjoined group must keep one readable size;
++                                # shrinking only this member would recreate the
++                                # two-size defect that the group association fixes.
++                                log_message(
++                                    "Conjoined text regions retained their common font size after collision check",
++                                    verbose=verbose,
++                                    always_print=True,
++                                )
++                            rendered_image = _composite_text_layer(
++                                pil_cleaned_image, best_layer, best_mask
++                            )
++                            occupied_text_mask |= best_mask
++
+                         if success:
+                             pil_cleaned_image = rendered_image
+                             final_image_to_save = pil_cleaned_image
+diff --git a/core/services/translation.py b/core/services/translation.py
+index 18e227e..21f9fc4 100644
+--- a/core/services/translation.py
++++ b/core/services/translation.py
+@@ -1066,8 +1066,6 @@ def _parse_llm_response_unified(
+             f"Parsing {provider} unified response: {len(response_text)} chars",
+             verbose=debug,
+         )
+-        log_message(f"Raw response:\n---\n{response_text}\n---", always_print=True)
+-
+         # Pattern matches "1: text" or "1. text" or "1 text" etc.
+         pattern = re.compile(
+             r'^\s*(\d+)\s*[:.]\s*"?\s*(.*?)\s*"?\s*(?=\s*\n\s*\d+\s*[:.]|\s*$)',
+@@ -1139,28 +1137,24 @@ def _format_ocr_results(
+     extracted_texts: List[str],
+     bubble_metadata: List[Dict[str, Any]],
+ ) -> None:
+-    """Format and log OCR results.
++    """Log OCR result counts without exposing recognized content.
+ 
+     Args:
+-        extracted_texts: List of extracted text strings
+-        bubble_metadata: List of metadata dicts for text elements
+-        verbose: Whether to print verbose logging
++        extracted_texts: Recognized strings, used only to count completed regions
++        bubble_metadata: Metadata used to count bubble and outside-text regions
+     """
+-    log_lines = []
+-
+-    for i, text in enumerate(extracted_texts):
+-        metadata = bubble_metadata[i] if i < len(bubble_metadata) else {}
+-        is_osb = metadata.get("is_outside_text", False)
+-        prefix = f"{i + 1}"
+-        type_label = "[OSB]" if is_osb else "[Bubble]"
+-
+-        log_lines.append(f"{prefix}: {type_label} {text}")
+-
+-    if log_lines:
+-        log_message(
+-            f"Raw OCR output:\n---\n{chr(10).join(log_lines)}\n---",
+-            always_print=True,
+-        )
++    outside_count = sum(
++        1
++        for index in range(len(extracted_texts))
++        if index < len(bubble_metadata)
++        and bubble_metadata[index].get("is_outside_text", False)
++    )
++    bubble_count = len(extracted_texts) - outside_count
++    log_message(
++        f"OCR completed: {len(extracted_texts)} region(s) "
++        f"({bubble_count} bubble, {outside_count} outside-text)",
++        always_print=True,
++    )
+ 
+ 
+ def _check_ocr_failure(texts: List[str], provider: Optional[str] = None) -> bool:
+@@ -1298,8 +1292,6 @@ def _parse_rosetta_response(
+     if response_text == "":
+         raise TranslationError(f"{provider}: Empty response")
+ 
+-    log_message(f"Raw response:\n---\n{response_text}\n---", always_print=True)
+-
+     # Strip markdown code fences if present
+     cleaned = response_text.strip()
+     if cleaned.startswith("```"):
+@@ -1380,6 +1372,77 @@ def _build_hy_mt2_prompt(
+     return prompt
+ 
+ 
++def _repair_hy_mt2_unexpected_latin(
++    config,
++    output_language: str,
++    extracted_texts: List[str],
++    translations: List[str],
++    provider: str,
++    debug: bool,
++) -> List[str]:
++    """Retry only Chinese results that introduced a long Latin word."""
++    if "chinese" not in output_language.lower():
++        return translations
++
++    repair_indices = [
++        index
++        for index, (source, translated) in enumerate(
++            zip(extracted_texts, translations)
++        )
++        if re.search(r"[A-Za-z]{3,}", translated)
++    ]
++    if not repair_indices:
++        return translations
++
++    page_context = json.dumps(extracted_texts, ensure_ascii=False)
++    repair_inputs = [
++        (
++            f"Japanese source: {extracted_texts[original_index]}\n"
++            f"Rejected draft: {translations[original_index]}\n"
++            f"Same-page Japanese context: {page_context}"
++        )
++        for original_index in repair_indices
++    ]
++    prompt = _build_hy_mt2_prompt(
++        output_language,
++        repair_inputs,
++        (
++            "Repair the rejected manga translation using the Japanese source and "
++            "same-page context. Output only the corrected translation for each item. "
++            "For a katakana technical term, infer its meaning from the surrounding "
++            "explanation and use the established Simplified Chinese term. Never retain "
++            "Latin letters and never use phonetic transliteration."
++        ),
++    )
++    log_message(
++        f"Retrying {len(repair_indices)} translation(s) with unexpected Latin text",
++        verbose=debug,
++    )
++    response = _call_llm_endpoint(
++        config,
++        [],
++        prompt,
++        debug,
++        system_prompt=None,
++        prompt_cache_key=None,
++    )
++    repaired = _parse_rosetta_response(
++        response,
++        len(repair_indices),
++        provider + "-Latin-Repair",
++        debug,
++    )
++    if repaired is None:
++        return translations
++
++    result = list(translations)
++    for repair_index, original_index in enumerate(repair_indices):
++        candidate = repaired[repair_index].strip()
++        if candidate and not re.search(r"[A-Za-z]{3,}", candidate):
++            result[original_index] = candidate
++    return result
++
++
+ def _perform_manga_ocr(
+     images_b64: List[str],
+     bubble_metadata: List[Dict[str, Any]],
+@@ -1692,6 +1755,22 @@ def call_translation_api_batch(
+     cached_translation, cached_ocr_texts = cache.get_translation(cache_key)
+     if cached_translation is not None:
+         log_message("  - Using cached translation", verbose=debug)
++        if cached_ocr_texts is not None:
++            repaired_translation = _repair_hy_mt2_unexpected_latin(
++                config,
++                output_language,
++                cached_ocr_texts,
++                cached_translation,
++                provider,
++                debug,
++            )
++            if repaired_translation != cached_translation:
++                cached_translation = repaired_translation
++                cache.set_translation(
++                    cache_key,
++                    cached_translation,
++                    ocr_texts=cached_ocr_texts,
++                )
+         if ocr_texts_output is not None and cached_ocr_texts is not None:
+             ocr_texts_output.extend(cached_ocr_texts)
+         return cached_translation
+@@ -1914,6 +1993,16 @@ The target language is {output_language}. Use the appropriate translation approa
+                     debug,
+                 )
+ 
++            if final_translations is not None:
++                final_translations = _repair_hy_mt2_unexpected_latin(
++                    config,
++                    output_language,
++                    extracted_texts,
++                    final_translations,
++                    provider,
++                    debug,
++                )
++
+             if final_translations is None:
+                 log_message("Translation API call failed", always_print=True)
+                 combined_results = []
+diff --git a/core/text/drawing_engine.py b/core/text/drawing_engine.py
+index 39502e9..67c7b3a 100644
+--- a/core/text/drawing_engine.py
++++ b/core/text/drawing_engine.py
+@@ -268,7 +268,10 @@ def draw_layout(
+ 
+             if layout_data.get("orientation") == "vertical":
+                 block_height = layout_data.get("block_height") or 0.0
+-                block_top_y = target_center_y - block_height / 2.0
++                vertical_features = layout_data.get(
++                    "vertical_features",
++                    {**features_to_enable, "vert": True, "vrt2": True},
++                )
+ 
+                 for i, line_data in enumerate(final_lines_data):
+                     segment_text = line_data.get("text_with_markers", "")
+@@ -288,7 +291,7 @@ def draw_layout(
+ 
+                     try:
+                         infos, positions, _ = shape_line(
+-                            segment_text, hb_font_segment, features_to_enable
++                            segment_text, hb_font_segment, vertical_features
+                         )
+                         if not infos:
+                             continue
+@@ -304,7 +307,14 @@ def draw_layout(
+                     right = line_data.get("right", line_data.get("width", 0.0))
+                     top = line_data.get("top", -line_data.get("height", 0.0))
+                     bottom = line_data.get("bottom", 0.0)
+-                    baseline_x = target_center_x - (left + right) / 2.0
++                    column_center_x = target_center_x + line_data.get(
++                        "column_offset_x", 0.0
++                    )
++                    column_block_height = line_data.get(
++                        "column_block_height", block_height
++                    )
++                    block_top_y = target_center_y - column_block_height / 2.0
++                    baseline_x = column_center_x - (left + right) / 2.0
+                     baseline_y = block_top_y + line_data.get("origin_y", 0.0)
+ 
+                     if bg_paint is not None:
+diff --git a/core/text/layout_engine.py b/core/text/layout_engine.py
+index d4a7d97..f2dc56d 100644
+--- a/core/text/layout_engine.py
++++ b/core/text/layout_engine.py
+@@ -24,8 +24,14 @@ from utils.logging import log_message
+ # Epsilon to guard rounding when converting from HarfBuzz 26.6 fixed-point.
+ VISUAL_WIDTH_EPSILON = 0.0
+ HB_26_6_SCALE_FACTOR = 64.0
+-VERTICAL_ADVANCE_TRACKING = 0.90
+-VERTICAL_GROUPED_PUNCTUATION = set(".,;:!?…。．！？｡")
++VERTICAL_ADVANCE_TRACKING = 1.10
++VERTICAL_COLUMN_GAP_MULT = 0.35
++DENSE_VERTICAL_COLUMN_GAP_MULT = 0.50
++DENSE_VERTICAL_MIN_COLUMNS = 4
++VERTICAL_NO_COLUMN_START = set("，。！？；：、…‥,.!?;:)]}〉》」』】〕］｝")
++VERTICAL_NO_COLUMN_END = set("([{〈《「『【〔［｛")
++VERTICAL_ELLIPSIS_RUN = re.compile(r"(?:\.{2,}|．{2,}|…+|‥+)")
++VERTICAL_LATIN_RUN = re.compile(r"[A-Za-z0-9]+")
+ 
+ 
+ def shape_line(
+@@ -136,31 +142,53 @@ def _is_separator_or_space(ch: str) -> bool:
+     return ch.isspace() or (len(category) > 0 and category[0] == "Z")
+ 
+ 
+-def _iter_vertical_units(text: str) -> List[Tuple[str, str]]:
+-    units: List[Tuple[str, str]] = []
+-    for segment_text, style_name in parse_styled_segments(text):
++def _normalize_vertical_text(text: str) -> str:
++    """Normalize ellipsis variants for Simplified-Chinese vertical dialogue."""
++    return VERTICAL_ELLIPSIS_RUN.sub("……", text)
++
++
++def _iter_vertical_units(text: str) -> List[Tuple[str, str, bool]]:
++    units: List[Tuple[str, str, bool]] = []
++    for segment_text, style_name in parse_styled_segments(
++        _normalize_vertical_text(text)
++    ):
+         current = ""
+-        current_is_punctuation = False
+-        for ch in segment_text:
++        index = 0
++        while index < len(segment_text):
++            ch = segment_text[index]
+             if _is_separator_or_space(ch):
+                 if current:
+-                    units.append((current, style_name))
++                    units.append((current, style_name, False))
+                     current = ""
+-                    current_is_punctuation = False
++                index += 1
+                 continue
+-            if unicodedata.combining(ch) and current:
+-                current += ch
++            if ch in ",，":
++                if current:
++                    units.append((current, style_name, True))
++                    current = ""
++                elif units:
++                    previous_text, previous_style, _ = units[-1]
++                    units[-1] = (previous_text, previous_style, True)
++                index += 1
+                 continue
+-            ch_is_punctuation = ch in VERTICAL_GROUPED_PUNCTUATION
+-            if current and current_is_punctuation and ch_is_punctuation:
++            latin_match = VERTICAL_LATIN_RUN.match(segment_text, index)
++            if latin_match:
++                if current:
++                    units.append((current, style_name, False))
++                    current = ""
++                units.append((latin_match.group(0), style_name, False))
++                index = latin_match.end()
++                continue
++            if unicodedata.combining(ch) and current:
+                 current += ch
++                index += 1
+                 continue
+             if current:
+-                units.append((current, style_name))
++                units.append((current, style_name, False))
+             current = ch
+-            current_is_punctuation = ch_is_punctuation
++            index += 1
+         if current:
+-            units.append((current, style_name))
++            units.append((current, style_name, False))
+     return units
+ 
+ 
+@@ -171,7 +199,12 @@ def _measure_vertical_unit(
+     loaded_hb_faces: Dict[str, Optional[hb.Face]],
+     features: Dict[str, bool],
+ ) -> Optional[Dict]:
+-    hb_face = loaded_hb_faces.get(style_name) or loaded_hb_faces.get("regular")
++    effective_style = (
++        "bold"
++        if style_name == "regular" and loaded_hb_faces.get("bold") is not None
++        else style_name
++    )
++    hb_face = loaded_hb_faces.get(effective_style) or loaded_hb_faces.get("regular")
+     if hb_face is None:
+         return None
+ 
+@@ -240,7 +273,7 @@ def _measure_vertical_unit(
+ 
+     return {
+         "text_with_markers": text,
+-        "style": style_name,
++        "style": effective_style,
+         "width": visual_width,
+         "height": visual_height,
+         "advance_height": advance_height,
+@@ -262,59 +295,153 @@ def _build_vertical_layout(
+     line_spacing_mult: float,
+     metrics,
+ ) -> Optional[Dict]:
++    vertical_features = dict(features_to_enable)
++    vertical_features["vert"] = True
++    vertical_features["vrt2"] = True
+     lines_data_at_size = []
+-    for unit_text, style_name in _iter_vertical_units(text):
++    for unit_text, style_name, soft_break_after in _iter_vertical_units(text):
+         unit = _measure_vertical_unit(
+             unit_text,
+             style_name,
+             font_size,
+             loaded_hb_faces,
+-            features_to_enable,
++            vertical_features,
+         )
+         if unit is None:
+             continue
++        unit["soft_break_after"] = soft_break_after
+         lines_data_at_size.append(unit)
+ 
+     if not lines_data_at_size:
+         return None
+ 
+-    current_y = 0.0
+-    for index, unit in enumerate(lines_data_at_size):
+-        advance_height = max(unit["height"], unit.get("advance_height", 0.0))
+-        step_height = max(
+-            unit["height"],
+-            advance_height * line_spacing_mult * VERTICAL_ADVANCE_TRACKING,
+-        )
+-
+-        unit["advance_height"] = advance_height
+-        unit["origin_y"] = current_y + unit.get("baseline_offset_y", 0.0)
+-        if index == len(lines_data_at_size) - 1:
+-            current_y += advance_height
++    def _position_column(column: List[Dict]) -> float:
++        current_y = 0.0
++        for index, unit in enumerate(column):
++            advance_height = max(unit["height"], unit.get("advance_height", 0.0))
++            step_height = max(
++                unit["height"],
++                advance_height * line_spacing_mult * VERTICAL_ADVANCE_TRACKING,
++            )
++            unit["advance_height"] = advance_height
++            unit["origin_y"] = current_y + unit.get("baseline_offset_y", 0.0)
++            current_y += advance_height if index == len(column) - 1 else step_height
++
++        visual_top = min(unit["origin_y"] + unit["top"] for unit in column)
++        visual_bottom = max(unit["origin_y"] + unit["bottom"] for unit in column)
++        content_top = min(0.0, visual_top)
++        content_bottom = max(current_y, visual_bottom)
++        if content_top < 0.0:
++            for unit in column:
++                unit["origin_y"] -= content_top
++            content_bottom -= content_top
++        return max(1.0, content_bottom)
++
++    greedy_columns: List[List[Dict]] = []
++    current_column: List[Dict] = []
++    for unit in lines_data_at_size:
++        candidate = current_column + [unit]
++        if current_column and _position_column(candidate) > max_render_height:
++            greedy_columns.append(current_column)
++            current_column = [unit]
+         else:
+-            current_y += step_height
++            current_column = candidate
++        if _position_column(current_column) > max_render_height:
++            return None
++    if current_column:
++        greedy_columns.append(current_column)
++
++    # Keep the minimum column count found by the fit pass, but distribute the
++    # units evenly so a nearly full first column cannot leave one or two orphan
++    # characters in the final column.
++    column_count = len(greedy_columns)
++    balanced_columns: List[List[Dict]] = []
++    offset = 0
++    for column_index in range(column_count):
++        remaining_columns = column_count - column_index
++        if remaining_columns == 1:
++            balanced_columns.append(lines_data_at_size[offset:])
++            break
+ 
+-    visual_top = min(unit["origin_y"] + unit["top"] for unit in lines_data_at_size)
+-    visual_bottom = max(
+-        unit["origin_y"] + unit["bottom"] for unit in lines_data_at_size
++        remaining_units = len(lines_data_at_size) - offset
++        ideal_count = max(1, round(remaining_units / remaining_columns))
++        ideal_end = offset + ideal_count
++        maximum_end = len(lines_data_at_size) - (remaining_columns - 1)
++        soft_ends = [
++            end
++            for end in range(offset + 1, maximum_end + 1)
++            if lines_data_at_size[end - 1].get("soft_break_after", False)
++        ]
++        tolerance = max(2, ideal_count // 3)
++        nearby_soft_ends = [
++            end for end in soft_ends if abs(end - ideal_end) <= tolerance
++        ]
++        end = (
++            min(nearby_soft_ends, key=lambda candidate: abs(candidate - ideal_end))
++            if nearby_soft_ends
++            else min(ideal_end, maximum_end)
++        )
++        balanced_columns.append(lines_data_at_size[offset:end])
++        offset = end
++
++    # Avoid beginning a left-hand column with closing punctuation or ending a
++    # right-hand column with opening punctuation when the preceding column can
++    # safely absorb the mark.
++    for column_index in range(len(balanced_columns) - 1):
++        current = balanced_columns[column_index]
++        following = balanced_columns[column_index + 1]
++        while (
++            following
++            and following[0]["text_with_markers"] in VERTICAL_NO_COLUMN_START
++        ):
++            candidate = current + [following[0]]
++            if _position_column(candidate) > max_render_height:
++                break
++            current.append(following.pop(0))
++        if current and current[-1]["text_with_markers"] in VERTICAL_NO_COLUMN_END:
++            if len(current) > 1:
++                following.insert(0, current.pop())
++
++    if all(
++        column and _position_column(column) <= max_render_height
++        for column in balanced_columns
++    ):
++        columns = balanced_columns
++    else:
++        columns = greedy_columns
++
++    column_heights = [_position_column(column) for column in columns]
++    column_width = max(unit["width"] for unit in lines_data_at_size)
++    column_gap_mult = (
++        DENSE_VERTICAL_COLUMN_GAP_MULT
++        if len(columns) >= DENSE_VERTICAL_MIN_COLUMNS
++        else VERTICAL_COLUMN_GAP_MULT
+     )
+-    content_top = min(0.0, visual_top)
+-    content_bottom = max(current_y, visual_bottom)
+-    if content_top < 0.0:
+-        for unit in lines_data_at_size:
+-            unit["origin_y"] -= content_top
+-        content_bottom -= content_top
+-
+-    block_height = max(1.0, content_bottom)
+-    max_line_width = max(unit["width"] for unit in lines_data_at_size)
+-
+-    if max_line_width <= max_render_width and block_height <= max_render_height:
++    column_gap = max(1.0, column_width * column_gap_mult)
++    block_width = len(columns) * column_width + (len(columns) - 1) * column_gap
++    block_height = max(column_heights)
++
++    right_edge = block_width / 2.0
++    for column_index, (column, column_height) in enumerate(zip(columns, column_heights)):
++        column_offset_x = right_edge - column_width / 2.0
++        for unit in column:
++            unit["column_index"] = column_index
++            unit["column_offset_x"] = column_offset_x
++            unit["column_block_height"] = column_height
++        right_edge -= column_width + column_gap
++
++    if block_width <= max_render_width and block_height <= max_render_height:
+         return {
+             "lines": lines_data_at_size,
+             "metrics": metrics,
+-            "max_line_width": max_line_width,
++            "max_line_width": block_width,
+             "line_height": 0.0,
+             "block_height": block_height,
++            "column_count": len(columns),
++            "column_gap": column_gap,
++            "block_width": block_width,
+             "orientation": "vertical",
++            "vertical_features": vertical_features,
+         }
+     return None
+ 
+diff --git a/core/text/text_renderer.py b/core/text/text_renderer.py
+index 26161d6..0c0c838 100644
+--- a/core/text/text_renderer.py
++++ b/core/text/text_renderer.py
+@@ -1,3 +1,4 @@
++import re
+ from typing import Optional, Tuple
+ 
+ import numpy as np
+@@ -29,6 +30,7 @@ AUTO_VERTICAL_MAX_CHARS = 12
+ AUTO_VERTICAL_MAX_WORDS = 1
+ AUTO_VERTICAL_MAX_HORIZONTAL_FILL = 0.45
+ AUTO_VERTICAL_MIN_FILL_GAIN = 0.20
++LONG_LATIN_WORD = re.compile(r"[A-Za-z]{5,}")
+ 
+ 
+ def _plain_text_for_layout_policy(text: str) -> str:
+@@ -219,6 +221,12 @@ def render_text_skia(
+         )
+         return pil_image
+ 
++    # A long retained Latin word is more readable in a horizontal bubble than
++    # as one Latin letter per vertical cell. Short acronyms remain eligible for
++    # compact horizontal-in-vertical shaping.
++    if vertical_stack and LONG_LATIN_WORD.search(layout_text):
++        vertical_stack = False
++
+     try:
+         _, regular_typeface, regular_hb_face = load_font_resources(
+             str(regular_font_path)
+@@ -328,6 +336,8 @@ def render_text_skia(
+     required_styles = {"regular"} | {
+         style for _, style in parse_styled_segments(clean_text)
+     }
++    if layout_data.get("orientation") == "vertical":
++        required_styles.add("bold")
+     log_message(f"Required styles: {sorted(required_styles)}", verbose=verbose)
+ 
+     loaded_typefaces = {"regular": regular_typeface}
+@@ -420,6 +430,9 @@ def render_text_skia(
+         scaled_layout_data["max_line_width"] = layout_data["max_line_width"] * factor
+         if layout_data.get("block_height") is not None:
+             scaled_layout_data["block_height"] = layout_data["block_height"] * factor
++        for key in ("column_gap", "block_width"):
++            if layout_data.get(key) is not None:
++                scaled_layout_data[key] = layout_data[key] * factor
+ 
+         # Scale per-line and per-glyph measurements
+         for line_data in scaled_layout_data["lines"]:
+@@ -433,6 +446,8 @@ def render_text_skia(
+                 "top",
+                 "bottom",
+                 "origin_y",
++                "column_offset_x",
++                "column_block_height",
+             ):
+                 if key in line_data:
+                     line_data[key] = line_data[key] * factor
+diff --git a/core/validation.py b/core/validation.py
+index cec7997..f7762f6 100644
+--- a/core/validation.py
++++ b/core/validation.py
+@@ -176,7 +176,12 @@ def clamp_settings(settings: Any) -> Any:
+     for key, paths in _CONFIG_ATTR_PATHS.items():
+         if not hasattr(settings, "__dict__"):
+             break
+-        min_val, max_val = SETTING_CONSTRAINTS[key]
++        limits = SETTING_CONSTRAINTS.get(key)
++        if limits is None:
++            # Boolean and other non-numeric settings may share the attribute map,
++            # but they have no numeric bounds to clamp.
++            continue
++        min_val, max_val = limits
+         for path in paths:
+             target = settings
+             for attr in path[:-1]:

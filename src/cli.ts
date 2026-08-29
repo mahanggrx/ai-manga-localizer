@@ -13,7 +13,7 @@ const HELP = `manga-localizer - local-first Japanese manga quality orchestrator
 Usage:
   manga-localizer doctor [--config FILE] [--json]
   manga-localizer benchmark GOLDEN_SET [--out DIRECTORY]
-  manga-localizer translate-mvp INPUT --out DIRECTORY [--outside-text]
+  manga-localizer translate-mvp INPUT --out DIRECTORY
   manga-localizer translate INPUT --out DIRECTORY [--profile quality-local] [--allow-cloud] [--psd] [--config FILE]
 
 The CLI never downloads models or overwrites existing output. translate-mvp uses the installed MangaTranslator + Hy-MT2 local path; translate uses the experimental owned Koharu path.
@@ -111,7 +111,7 @@ async function main(): Promise<void> {
     const result = await runMvpTranslate(config, {
       inputPath: path.resolve(args.positionals[0]),
       outputParent: path.resolve(outputParent),
-      outsideText: flag(args, "--outside-text"),
+      outsideText: true,
     });
     process.stdout.write(`MVP translation ${result.report.status}: ${result.cbzPath}\n`);
     return;

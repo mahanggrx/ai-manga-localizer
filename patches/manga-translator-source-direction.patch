@@ -1,16 +1,117 @@
+diff --git a/core/config.py b/core/config.py
+index dac9ee2..56ba4bb 100644
+--- a/core/config.py
++++ b/core/config.py
+@@ -148,6 +148,7 @@ class OutsideTextConfig:
+     flux_residual_diff_threshold: float = 0.15
+     osb_confidence: float = 0.5
+     osb_text_free_only: bool = False  # Use the RT-DETR text_free class as OSB source
++    osb_caption_only: bool = False  # Keep only medium-sized text blocks on clean light backgrounds
+     osb_font_dir: Optional[str] = None  # None = use main font as fallback
+     osb_max_font_size: int = 64
+     osb_min_font_size: int = 10
+diff --git a/core/outside_text_processor.py b/core/outside_text_processor.py
+index 0566909..5f32167 100644
+--- a/core/outside_text_processor.py
++++ b/core/outside_text_processor.py
+@@ -34,6 +34,51 @@ OSB_COLOR_TOLERANCE = 15
+ OSB_EXPANSION_PX = 2
+ OSB_WHITE_SNAP_THRESH = 245
+ OSB_BLACK_SNAP_THRESH = 10
++OSB_CAPTION_MIN_AREA_RATIO = 0.008
++OSB_CAPTION_MAX_AREA_RATIO = 0.08
++OSB_CAPTION_MIN_LIGHT_RING_RATIO = 0.90
++
++
++def _filter_caption_like_regions(pil_image: Image.Image, outside_text_results):
++    """Keep medium-sized text blocks surrounded by clean light page space."""
++    image_gray = np.asarray(pil_image.convert("L"))
++    img_h, img_w = image_gray.shape
++    image_area = float(img_w * img_h)
++    caption_results = []
++
++    for bbox, conf in outside_text_results:
++        raw_x1, raw_y1, raw_x2, raw_y2 = [int(c) for c in bbox]
++        x1 = max(0, min(img_w, raw_x1))
++        y1 = max(0, min(img_h, raw_y1))
++        x2 = max(0, min(img_w, raw_x2))
++        y2 = max(0, min(img_h, raw_y2))
++        width = max(0, x2 - x1)
++        height = max(0, y2 - y1)
++        area_ratio = (width * height) / max(1.0, image_area)
++        if not OSB_CAPTION_MIN_AREA_RATIO <= area_ratio <= OSB_CAPTION_MAX_AREA_RATIO:
++            continue
++
++        padding = max(8, int(min(width, height) * 0.25))
++        ex1 = max(0, x1 - padding)
++        ey1 = max(0, y1 - padding)
++        ex2 = min(img_w, x2 + padding)
++        ey2 = min(img_h, y2 + padding)
++        ring = image_gray[ey1:ey2, ex1:ex2]
++        ring_mask = np.ones(ring.shape, dtype=bool)
++        ring_mask[y1 - ey1 : y2 - ey1, x1 - ex1 : x2 - ex1] = False
++        ring_pixels = ring[ring_mask]
++        if ring_pixels.size == 0:
++            continue
++        light_ratio = float(np.mean(ring_pixels >= 235))
++        if light_ratio >= OSB_CAPTION_MIN_LIGHT_RING_RATIO:
++            caption_results.append((bbox, conf))
++
++    return caption_results
++
++
++def _caption_bbox_is_vertical(bbox) -> bool:
++    x1, y1, x2, y2 = bbox
++    return (y2 - y1) >= (x2 - x1) * 1.2
+
+
+ @dataclass
+@@ -254,6 +299,24 @@ def prepare_outside_text_work(
+
+         img_w, img_h = pil_image.size
+
++        if config.outside_text.osb_caption_only:
++            caption_results = _filter_caption_like_regions(
++                pil_image, outside_text_results
++            )
++
++            log_message(
++                f"Caption-only OSB filter kept {len(caption_results)}/"
++                f"{len(outside_text_results)} text_free region(s)",
++                verbose=verbose,
++            )
++            outside_text_results = caption_results
++            if not outside_text_results:
++                log_message(
++                    "No caption-like outside text regions found",
++                    verbose=verbose,
++                )
++                return None
++
+         min_ignore = max(0.0, min(0.05, config.outside_text.min_area_ignore_ratio))
+         if min_ignore > 0.0:
+             image_area = float(img_w * img_h)
 diff --git a/core/pipeline.py b/core/pipeline.py
-index cd083fb..eb037b3 100644
+index cd083fb..fb7a929 100644
 --- a/core/pipeline.py
 +++ b/core/pipeline.py
 @@ -7,6 +7,7 @@ import threading
  import time
- from collections import OrderedDict
+ from collections import OrderedDic
  from concurrent.futures import ThreadPoolExecutor
 +from dataclasses import replace
  from pathlib import Path
  from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
- 
-@@ -63,6 +64,347 @@ if TYPE_CHECKING:
+
+@@ -44,6 +45,7 @@ from .image.image_utils import (
+ from .image.sorting import sort_bubbles_by_reading_order, sort_panels_by_reading_order
+ from .ml.model_manager import get_model_manager
+ from .outside_text_processor import (
++    _caption_bbox_is_vertical,
+     finish_outside_text_work,
+     prepare_outside_text_work,
+     process_outside_text,
+@@ -63,6 +65,347 @@ if TYPE_CHECKING:
  ENABLE_COMPONENT_ORDER_DEBUG = False
  PREVIOUS_CONTEXT_CACHE_MAX_SIZE = 32
  NATURAL_SORT_TOKEN_RE = re.compile(r"(\d+)")
@@ -59,7 +160,7 @@ index cd083fb..eb037b3 100644
 +    result = page_image.copy()
 +    mask_image = Image.fromarray((layer_mask * 255).astype(np.uint8))
 +    result.paste(layer_image.convert(result.mode), (0, 0), mask_image)
-+    return result
++    return resul
 +
 +
 +def _scaled_collision_config(config: RenderingConfig, scale: float) -> RenderingConfig:
@@ -117,7 +218,7 @@ index cd083fb..eb037b3 100644
 +        first_root = find(first)
 +        second_root = find(second)
 +        if first_root != second_root:
-+            parents[second_root] = first_root
++            parents[second_root] = first_roo
 +
 +    for first_index, first_bubble in enumerate(bubbles):
 +        if first_bubble.get("is_outside_text", False):
@@ -179,7 +280,7 @@ index cd083fb..eb037b3 100644
 +            continue
 +
 +        # Keep each detected text block in its own geometry.  A conjoined
-+        # relation is a typography/collision group, not permission to invent
++        # relation is a typography/collision group, not permission to inven
 +        # a rectangular union bubble: the union can extend into page artwork.
 +        group_id = f"conjoined-{shared_group_number}"
 +        shared_group_number += 1
@@ -291,7 +392,7 @@ index cd083fb..eb037b3 100644
 +            member_vertical_stack,
 +        ) in enumerate(render_members):
 +            size_multiplier = (
-+                render_config.vertical_font_size_mult
++                render_config.vertical_font_size_mul
 +                if member_vertical_stack
 +                else 1.0
 +            )
@@ -355,10 +456,10 @@ index cd083fb..eb037b3 100644
 +            best_collision = collision_pixels
 +            best_font_size = candidate_font_size
 +    return best_font_size
- 
- 
+
+
  def _should_overlap_llm_with_inpaint(config: MangaTranslatorConfig) -> bool:
-@@ -1546,12 +1785,32 @@ def translate_and_render(
+@@ -1546,12 +1889,32 @@ def translate_and_render(
                  }
                  log_message("Rendering translations...", verbose=verbose)
                  if len(translated_texts) == len(sorted_bubble_data):
@@ -389,20 +490,35 @@ index cd083fb..eb037b3 100644
 -                    for i, bubble in enumerate(sorted_bubble_data):
 -                        bubble["translation"] = translated_texts[i]
 +                    for i, (bubble, translated_text) in enumerate(render_items):
-+                        bubble["translation"] = translated_text
++                        bubble["translation"] = translated_tex
                          bbox = bubble["bbox"]
                          text = bubble.get("translation", "")
                          is_outside_text = bubble.get("is_outside_text", False)
-@@ -1646,7 +1905,7 @@ def translate_and_render(
-                             max_font = main_max_font
-                             line_spacing = config.rendering.line_spacing_mult
+@@ -1617,9 +1980,12 @@ def translate_and_render(
+                             bubble_color_bgr = (
+                                 (50, 50, 50) if is_dark_text else (255, 255, 255)
+                             )
+-                            # OSB renders default to horizontal; vertical stacking is fallback-only
++                            # Caption-only OSB follows the detected source block direction.
+                             rotation_deg = 0.0
+-                            vertical_stack = False
++                            vertical_stack = bool(
++                                config.outside_text.osb_caption_only
++                                and _caption_bbox_is_vertical(bbox)
++                            )
+
+                             text_bg_rgb = None
+                             if bubble.get("needs_text_background"):
+@@ -1646,7 +2012,7 @@ def translate_and_render(
+                             max_font = main_max_fon
+                             line_spacing = config.rendering.line_spacing_mul
                              use_ligs = config.rendering.use_ligatures
 -                            render_info = bubble_render_info_map.get(tuple(bbox))
 +                            render_info = bubble.get("_render_info") or bubble_render_info_map.get(tuple(bbox))
                              bubble_color_bgr = (255, 255, 255)
                              cleaned_mask = None
                              base_mask = None
-@@ -1664,8 +1923,7 @@ def translate_and_render(
+@@ -1664,8 +2030,7 @@ def translate_and_render(
                                          text_color_bgr_val[1],
                                          text_color_bgr_val[0],
                                      )
@@ -410,10 +526,10 @@ index cd083fb..eb037b3 100644
 -                            vertical_stack = False
 +                            vertical_stack = _source_text_is_vertical(render_info)
                              rotation_deg = 0.0
- 
+
                          # Latin languages use hyphenation; Korean/Thai use
-@@ -1723,6 +1981,44 @@ def translate_and_render(
-                                 else config.rendering.vertical_font_size_mult
+@@ -1723,6 +2088,44 @@ def translate_and_render(
+                                 else config.rendering.vertical_font_size_mul
                              ),
                          )
 +                        shared_group_id = bubble.get("_shared_group_id")
@@ -438,7 +554,7 @@ index cd083fb..eb037b3 100644
 +                            if shared_font_size is not None:
 +                                shared_group_has_common_size = True
 +                                size_multiplier = (
-+                                    render_config.vertical_font_size_mult
++                                    render_config.vertical_font_size_mul
 +                                    if vertical_stack
 +                                    else 1.0
 +                                )
@@ -457,7 +573,7 @@ index cd083fb..eb037b3 100644
                          success = False
                          if is_outside_text:
                              try:
-@@ -1822,7 +2118,7 @@ def translate_and_render(
+@@ -1822,7 +2225,7 @@ def translate_and_render(
                          else:
                              try:
                                  rendered_image = render_text_skia(
@@ -466,8 +582,8 @@ index cd083fb..eb037b3 100644
                                      text=text,
                                      bbox=bbox,
                                      font_dir=font_dir,
-@@ -1909,7 +2205,7 @@ def translate_and_render(
- 
+@@ -1909,7 +2312,7 @@ def translate_and_render(
+
                                      try:
                                          rendered_image = render_text_skia(
 -                                            pil_image=pil_cleaned_image,
@@ -475,7 +591,7 @@ index cd083fb..eb037b3 100644
                                              text=text,
                                              bbox=bbox,
                                              font_dir=font_dir,
-@@ -1947,7 +2243,7 @@ def translate_and_render(
+@@ -1947,7 +2350,7 @@ def translate_and_render(
                                      )
                                      try:
                                          rendered_image = render_text_skia(
@@ -484,10 +600,10 @@ index cd083fb..eb037b3 100644
                                              text=text,
                                              bbox=bbox,
                                              font_dir=font_dir,
-@@ -1975,6 +2271,78 @@ def translate_and_render(
+@@ -1975,6 +2378,78 @@ def translate_and_render(
                                  rendered_image = pil_cleaned_image
                                  success = False
- 
+
 +                        if success and not is_outside_text:
 +                            best_layer = rendered_image
 +                            best_mask = _rendered_text_mask(
@@ -564,10 +680,18 @@ index cd083fb..eb037b3 100644
                              pil_cleaned_image = rendered_image
                              final_image_to_save = pil_cleaned_image
 diff --git a/core/services/translation.py b/core/services/translation.py
-index 18e227e..21f9fc4 100644
+index 18e227e..d982f56 100644
 --- a/core/services/translation.py
 +++ b/core/services/translation.py
-@@ -1066,8 +1066,6 @@ def _parse_llm_response_unified(
+@@ -1,6 +1,7 @@
+ import base64
+ import json
+ import re
++import urllib.reques
+ from io import BytesIO
+ from typing import Any, Dict, List, Optional
+
+@@ -1066,8 +1067,6 @@ def _parse_llm_response_unified(
              f"Parsing {provider} unified response: {len(response_text)} chars",
              verbose=debug,
          )
@@ -576,13 +700,13 @@ index 18e227e..21f9fc4 100644
          # Pattern matches "1: text" or "1. text" or "1 text" etc.
          pattern = re.compile(
              r'^\s*(\d+)\s*[:.]\s*"?\s*(.*?)\s*"?\s*(?=\s*\n\s*\d+\s*[:.]|\s*$)',
-@@ -1139,28 +1137,24 @@ def _format_ocr_results(
+@@ -1139,28 +1138,24 @@ def _format_ocr_results(
      extracted_texts: List[str],
      bubble_metadata: List[Dict[str, Any]],
  ) -> None:
 -    """Format and log OCR results.
 +    """Log OCR result counts without exposing recognized content.
- 
+
      Args:
 -        extracted_texts: List of extracted text strings
 -        bubble_metadata: List of metadata dicts for text elements
@@ -611,28 +735,28 @@ index 18e227e..21f9fc4 100644
 +        if index < len(bubble_metadata)
 +        and bubble_metadata[index].get("is_outside_text", False)
 +    )
-+    bubble_count = len(extracted_texts) - outside_count
++    bubble_count = len(extracted_texts) - outside_coun
 +    log_message(
 +        f"OCR completed: {len(extracted_texts)} region(s) "
 +        f"({bubble_count} bubble, {outside_count} outside-text)",
 +        always_print=True,
 +    )
- 
- 
+
+
  def _check_ocr_failure(texts: List[str], provider: Optional[str] = None) -> bool:
-@@ -1298,8 +1292,6 @@ def _parse_rosetta_response(
+@@ -1298,8 +1293,6 @@ def _parse_rosetta_response(
      if response_text == "":
          raise TranslationError(f"{provider}: Empty response")
- 
+
 -    log_message(f"Raw response:\n---\n{response_text}\n---", always_print=True)
 -
-     # Strip markdown code fences if present
+     # Strip markdown code fences if presen
      cleaned = response_text.strip()
      if cleaned.startswith("```"):
-@@ -1380,6 +1372,77 @@ def _build_hy_mt2_prompt(
-     return prompt
- 
- 
+@@ -1380,7 +1373,149 @@ def _build_hy_mt2_prompt(
+     return promp
+
+
 +def _repair_hy_mt2_unexpected_latin(
 +    config,
 +    output_language: str,
@@ -701,14 +825,118 @@ index 18e227e..21f9fc4 100644
 +        candidate = repaired[repair_index].strip()
 +        if candidate and not re.search(r"[A-Za-z]{3,}", candidate):
 +            result[original_index] = candidate
-+    return result
++    return resul
++
++
++_SUSPICIOUS_OCR_CALENDAR = re.compile(
++    r"(?:[0-9０-９]{4}|[Il|][0-9０-９]{3}|"
++    r"[一二三四五六七八九〇零]{4}\s*年|"
++    r"[0-9０-９]{1,2}\s*月\s*[0-9０-９]{1,2}\s*日|"
++    r"[一二三四五六七八九十〇零]{1,3}\s*月\s*"
++    r"[一二三四五六七八九十〇零]{1,3}\s*日)"
++)
++
++
++def _review_suspicious_manga_ocr(
++    config: TranslationConfig,
++    images_b64: List[str],
++    extracted_texts: List[str],
++    debug: bool = False,
++) -> List[str]:
++    """Replace calendar-shaped Manga OCR only when local Paddle OCR removes it."""
++    result = list(extracted_texts)
++    reviewed = 0
++    accepted = 0
++    endpoint = config.openai_compatible_url.rstrip("/") + "/chat/completions"
++
++    for index, text in enumerate(extracted_texts):
++        if not _SUSPICIOUS_OCR_CALENDAR.search(text) or index >= len(images_b64):
++            continue
++        reviewed += 1
++        payload = {
++            "model": "paddleocr-vl-local",
++            "stream": False,
++            "temperature": 0,
++            "max_tokens": 256,
++            "messages": [
++                {
++                    "role": "user",
++                    "content": [
++                        {
++                            "type": "image_url",
++                            "image_url": {
++                                "url": "data:image/png;base64," + images_b64[index]
++                            },
++                        },
++                        {"type": "text", "text": "OCR:"},
++                    ],
++                }
++            ],
++        }
++        request = urllib.request.Request(
++            endpoint,
++            data=json.dumps(payload).encode("utf-8"),
++            headers={"Content-Type": "application/json"},
++            method="POST",
++        )
++        try:
++            with urllib.request.urlopen(request, timeout=120) as response:
++                body = json.loads(response.read().decode("utf-8"))
++            candidate = body["choices"][0]["message"]["content"].strip()
++        except Exception:
++            continue
++        if candidate and not _SUSPICIOUS_OCR_CALENDAR.search(candidate):
++            result[index] = candidate
++            accepted += 1
++
++    if reviewed:
++        log_message(
++            f"Paddle OCR reviewed {reviewed} calendar-shaped region(s); "
++            f"accepted {accepted}",
++            verbose=debug,
++        )
++    return resul
 +
 +
  def _perform_manga_ocr(
++    config: TranslationConfig,
      images_b64: List[str],
      bubble_metadata: List[Dict[str, Any]],
-@@ -1692,6 +1755,22 @@ def call_translation_api_batch(
+     debug: bool = False,
+@@ -1404,11 +1539,19 @@ def _perform_manga_ocr(
+     if cached_ocr is not None:
+         if len(cached_ocr) == total_elements:
+             log_message("Using cached manga-ocr results", verbose=debug)
+-            return cached_ocr
++            reviewed_ocr = _review_suspicious_manga_ocr(
++                config, images_b64, cached_ocr, debug
++            )
++            if reviewed_ocr != cached_ocr:
++                cache.set_manga_ocr_result(cache_key, reviewed_ocr, debug)
++            return reviewed_ocr
+         log_message("Discarding manga-ocr cache due to length mismatch", verbose=debug)
+
+     pil_images = _prepare_images_for_ocr(images_b64, verbose=debug)
+     extracted_texts = extract_text_with_manga_ocr(pil_images, verbose=debug)
++    extracted_texts = _review_suspicious_manga_ocr(
++        config, images_b64, extracted_texts, debug
++    )
+
+     formatted_texts = []
+     for i, text in enumerate(extracted_texts):
+@@ -1690,8 +1833,33 @@ def call_translation_api_batch(
+         previous_context_texts=cleaned_previous_texts,
+     )
      cached_translation, cached_ocr_texts = cache.get_translation(cache_key)
++    if cached_translation is not None:
++        if config.ocr_method == "manga-ocr" and cached_ocr_texts is not None:
++            reviewed_ocr = _review_suspicious_manga_ocr(
++                config, images_b64, cached_ocr_texts, debug
++            )
++            if reviewed_ocr != cached_ocr_texts:
++                cached_translation = None
++                cached_ocr_texts = None
++
      if cached_translation is not None:
          log_message("  - Using cached translation", verbose=debug)
 +        if cached_ocr_texts is not None:
@@ -730,10 +958,18 @@ index 18e227e..21f9fc4 100644
          if ocr_texts_output is not None and cached_ocr_texts is not None:
              ocr_texts_output.extend(cached_ocr_texts)
          return cached_translation
-@@ -1914,6 +1993,16 @@ The target language is {output_language}. Use the appropriate translation approa
+@@ -1752,6 +1920,7 @@ Apply your OCR transcription rules to each image provided.{special_instructions_
+
+             if config.ocr_method == "manga-ocr":
+                 extracted_texts = _perform_manga_ocr(
++                    config,
+                     images_b64,
+                     bubble_metadata,
+                     debug,
+@@ -1914,6 +2083,16 @@ The target language is {output_language}. Use the appropriate translation approa
                      debug,
                  )
- 
+
 +            if final_translations is not None:
 +                final_translations = _repair_hy_mt2_unexpected_latin(
 +                    config,
@@ -752,7 +988,7 @@ index 39502e9..67c7b3a 100644
 --- a/core/text/drawing_engine.py
 +++ b/core/text/drawing_engine.py
 @@ -268,7 +268,10 @@ def draw_layout(
- 
+
              if layout_data.get("orientation") == "vertical":
                  block_height = layout_data.get("block_height") or 0.0
 -                block_top_y = target_center_y - block_height / 2.0
@@ -760,11 +996,11 @@ index 39502e9..67c7b3a 100644
 +                    "vertical_features",
 +                    {**features_to_enable, "vert": True, "vrt2": True},
 +                )
- 
+
                  for i, line_data in enumerate(final_lines_data):
                      segment_text = line_data.get("text_with_markers", "")
 @@ -288,7 +291,7 @@ def draw_layout(
- 
+
                      try:
                          infos, positions, _ = shape_line(
 -                            segment_text, hb_font_segment, features_to_enable
@@ -781,12 +1017,12 @@ index 39502e9..67c7b3a 100644
 +                        "column_offset_x", 0.0
 +                    )
 +                    column_block_height = line_data.get(
-+                        "column_block_height", block_height
++                        "column_block_height", block_heigh
 +                    )
 +                    block_top_y = target_center_y - column_block_height / 2.0
 +                    baseline_x = column_center_x - (left + right) / 2.0
                      baseline_y = block_top_y + line_data.get("origin_y", 0.0)
- 
+
                      if bg_paint is not None:
 diff --git a/core/text/layout_engine.py b/core/text/layout_engine.py
 index d4a7d97..f2dc56d 100644
@@ -806,13 +1042,13 @@ index d4a7d97..f2dc56d 100644
 +VERTICAL_NO_COLUMN_END = set("([{〈《「『【〔［｛")
 +VERTICAL_ELLIPSIS_RUN = re.compile(r"(?:\.{2,}|．{2,}|…+|‥+)")
 +VERTICAL_LATIN_RUN = re.compile(r"[A-Za-z0-9]+")
- 
- 
+
+
  def shape_line(
 @@ -136,31 +142,53 @@ def _is_separator_or_space(ch: str) -> bool:
      return ch.isspace() or (len(category) > 0 and category[0] == "Z")
- 
- 
+
+
 -def _iter_vertical_units(text: str) -> List[Tuple[str, str]]:
 -    units: List[Tuple[str, str]] = []
 -    for segment_text, style_name in parse_styled_segments(text):
@@ -875,8 +1111,8 @@ index d4a7d97..f2dc56d 100644
 -            units.append((current, style_name))
 +            units.append((current, style_name, False))
      return units
- 
- 
+
+
 @@ -171,7 +199,12 @@ def _measure_vertical_unit(
      loaded_hb_faces: Dict[str, Optional[hb.Face]],
      features: Dict[str, bool],
@@ -890,9 +1126,9 @@ index d4a7d97..f2dc56d 100644
 +    hb_face = loaded_hb_faces.get(effective_style) or loaded_hb_faces.get("regular")
      if hb_face is None:
          return None
- 
+
 @@ -240,7 +273,7 @@ def _measure_vertical_unit(
- 
+
      return {
          "text_with_markers": text,
 -        "style": style_name,
@@ -922,10 +1158,10 @@ index d4a7d97..f2dc56d 100644
              continue
 +        unit["soft_break_after"] = soft_break_after
          lines_data_at_size.append(unit)
- 
+
      if not lines_data_at_size:
          return None
- 
+
 -    current_y = 0.0
 -    for index, unit in enumerate(lines_data_at_size):
 -        advance_height = max(unit["height"], unit.get("advance_height", 0.0))
@@ -934,10 +1170,10 @@ index d4a7d97..f2dc56d 100644
 -            advance_height * line_spacing_mult * VERTICAL_ADVANCE_TRACKING,
 -        )
 -
--        unit["advance_height"] = advance_height
+-        unit["advance_height"] = advance_heigh
 -        unit["origin_y"] = current_y + unit.get("baseline_offset_y", 0.0)
 -        if index == len(lines_data_at_size) - 1:
--            current_y += advance_height
+-            current_y += advance_heigh
 +    def _position_column(column: List[Dict]) -> float:
 +        current_y = 0.0
 +        for index, unit in enumerate(column):
@@ -946,9 +1182,9 @@ index d4a7d97..f2dc56d 100644
 +                unit["height"],
 +                advance_height * line_spacing_mult * VERTICAL_ADVANCE_TRACKING,
 +            )
-+            unit["advance_height"] = advance_height
++            unit["advance_height"] = advance_heigh
 +            unit["origin_y"] = current_y + unit.get("baseline_offset_y", 0.0)
-+            current_y += advance_height if index == len(column) - 1 else step_height
++            current_y += advance_height if index == len(column) - 1 else step_heigh
 +
 +        visual_top = min(unit["origin_y"] + unit["top"] for unit in column)
 +        visual_bottom = max(unit["origin_y"] + unit["bottom"] for unit in column)
@@ -968,7 +1204,7 @@ index d4a7d97..f2dc56d 100644
 +            greedy_columns.append(current_column)
 +            current_column = [unit]
          else:
--            current_y += step_height
+-            current_y += step_heigh
 +            current_column = candidate
 +        if _position_column(current_column) > max_render_height:
 +            return None
@@ -986,13 +1222,13 @@ index d4a7d97..f2dc56d 100644
 +        if remaining_columns == 1:
 +            balanced_columns.append(lines_data_at_size[offset:])
 +            break
- 
+
 -    visual_top = min(unit["origin_y"] + unit["top"] for unit in lines_data_at_size)
 -    visual_bottom = max(
 -        unit["origin_y"] + unit["bottom"] for unit in lines_data_at_size
-+        remaining_units = len(lines_data_at_size) - offset
++        remaining_units = len(lines_data_at_size) - offse
 +        ideal_count = max(1, round(remaining_units / remaining_columns))
-+        ideal_end = offset + ideal_count
++        ideal_end = offset + ideal_coun
 +        maximum_end = len(lines_data_at_size) - (remaining_columns - 1)
 +        soft_ends = [
 +            end
@@ -1030,7 +1266,7 @@ index d4a7d97..f2dc56d 100644
 +                following.insert(0, current.pop())
 +
 +    if all(
-+        column and _position_column(column) <= max_render_height
++        column and _position_column(column) <= max_render_heigh
 +        for column in balanced_columns
 +    ):
 +        columns = balanced_columns
@@ -1065,7 +1301,7 @@ index d4a7d97..f2dc56d 100644
 +        for unit in column:
 +            unit["column_index"] = column_index
 +            unit["column_offset_x"] = column_offset_x
-+            unit["column_block_height"] = column_height
++            unit["column_block_height"] = column_heigh
 +        right_edge -= column_width + column_gap
 +
 +    if block_width <= max_render_width and block_height <= max_render_height:
@@ -1083,7 +1319,7 @@ index d4a7d97..f2dc56d 100644
 +            "vertical_features": vertical_features,
          }
      return None
- 
+
 diff --git a/core/text/text_renderer.py b/core/text/text_renderer.py
 index 26161d6..0c0c838 100644
 --- a/core/text/text_renderer.py
@@ -1091,20 +1327,20 @@ index 26161d6..0c0c838 100644
 @@ -1,3 +1,4 @@
 +import re
  from typing import Optional, Tuple
- 
+
  import numpy as np
 @@ -29,6 +30,7 @@ AUTO_VERTICAL_MAX_CHARS = 12
  AUTO_VERTICAL_MAX_WORDS = 1
  AUTO_VERTICAL_MAX_HORIZONTAL_FILL = 0.45
  AUTO_VERTICAL_MIN_FILL_GAIN = 0.20
 +LONG_LATIN_WORD = re.compile(r"[A-Za-z]{5,}")
- 
- 
+
+
  def _plain_text_for_layout_policy(text: str) -> str:
 @@ -219,6 +221,12 @@ def render_text_skia(
          )
          return pil_image
- 
+
 +    # A long retained Latin word is more readable in a horizontal bubble than
 +    # as one Latin letter per vertical cell. Short acronyms remain eligible for
 +    # compact horizontal-in-vertical shaping.
@@ -1121,7 +1357,7 @@ index 26161d6..0c0c838 100644
 +    if layout_data.get("orientation") == "vertical":
 +        required_styles.add("bold")
      log_message(f"Required styles: {sorted(required_styles)}", verbose=verbose)
- 
+
      loaded_typefaces = {"regular": regular_typeface}
 @@ -420,6 +430,9 @@ def render_text_skia(
          scaled_layout_data["max_line_width"] = layout_data["max_line_width"] * factor
@@ -1130,7 +1366,7 @@ index 26161d6..0c0c838 100644
 +        for key in ("column_gap", "block_width"):
 +            if layout_data.get(key) is not None:
 +                scaled_layout_data[key] = layout_data[key] * factor
- 
+
          # Scale per-line and per-glyph measurements
          for line_data in scaled_layout_data["lines"]:
 @@ -433,6 +446,8 @@ def render_text_skia(
@@ -1160,3 +1396,30 @@ index cec7997..f7762f6 100644
          for path in paths:
              target = settings
              for attr in path[:-1]:
+diff --git a/main.py b/main.py
+index c26df5d..3decfc7 100644
+--- a/main.py
++++ b/main.py
+@@ -876,6 +876,14 @@ def main():
+             "(narration-style text blocks), ignoring stray SFX and other detections"
+         ),
+     )
++    parser.add_argument(
++        "--osb-caption-only",
++        action="store_true",
++        help=(
++            "Conservatively keep only medium-sized RT-DETR text_free regions "
++            "surrounded by a clean light background"
++        ),
++    )
+     parser.add_argument(
+         "--osb-filter-page-numbers",
+         action="store_true",
+@@ -1304,6 +1312,7 @@ def main():
+             flux_residual_diff_threshold=args.osb_flux_residual_threshold,
+             osb_confidence=args.osb_confidence,
+             osb_text_free_only=args.osb_text_free_only,
++            osb_caption_only=args.osb_caption_only,
+             seed=args.osb_seed,
+             osb_font_dir=args.osb_font_dir,
+             osb_max_font_size=args.osb_max_font_size,

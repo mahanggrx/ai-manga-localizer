@@ -16,12 +16,15 @@ const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const HOST = "127.0.0.1";
 const PORT = 8080;
 const ROUTER_PORT = 8081;
+const PADDLE_OCR_MODEL_ALIAS = "paddleocr-vl-local";
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
 
 export interface MangaTranslatorAssets {
   llamaServer: string;
   model: string;
   fallbackModel: string;
+  ocrModel: string;
+  ocrMmproj: string;
   python: string;
   main: string;
   models: string;
@@ -31,15 +34,16 @@ export interface MangaTranslatorAssets {
 }
 
 export interface MvpTranslateReport {
-  schemaVersion: 4;
+  schemaVersion: 5;
   status: "completed" | "partial" | "failed";
   startedAt: string;
   completedAt: string;
   inputKind: "directory" | "zip" | "cbz" | "image" | "unknown";
   outputImages: number;
   failedImages: number;
-  outsideTextMode: "disabled" | "text-free-opencv";
+  outsideTextMode: "disabled" | "caption-only-opencv" | "text-free-opencv";
   engine: { pipeline: "MangaTranslator"; translator: "Hy-MT2-7B-Q4_K_M"; fallbackTranslator: "Sakura-GalTransl-7B-v3.7-IQ4_XS"; ocr: "manga-ocr" };
+  chapterContext: { mode: "previous-ocr"; previousOcrPages: 3; previousBilingualPages: 0 };
   sakuraFallbackRegions: number;
   sakuraFallbackFailures: number;
   cbz?: "translated.cbz";
@@ -56,10 +60,13 @@ export interface MvpTranslateResult {
 export function defaultMangaTranslatorAssets(root = PROJECT_ROOT): MangaTranslatorAssets {
   const mangaTranslator = path.join(root, ".local", "manga-translator", "MangaTranslator");
   const localAppData = process.env.LOCALAPPDATA ?? path.join(root, ".localizer-cache");
+  const paddleSnapshot = path.join(root, ".localizer-cache", "koharu-0.61.2-composite-shadow-9c0f518a8968", "models", "huggingface", "models--PaddlePaddle--PaddleOCR-VL-1.6-GGUF", "snapshots", "511b09642bb324401f15f97cc23bc67e8f0a291d");
   return {
     llamaServer: path.join(root, ".local", "llama-server", "llama-server.exe"),
     model: path.join(root, ".localizer-cache", "models", "tencent--Hy-MT2-7B-GGUF", "ab8472660ac61fac25f1af43fac2599d52a8a775", "Hy-MT2-7B-Q4_K_M.gguf"),
     fallbackModel: path.join(localAppData, "Koharu", "models", "huggingface", "models--SakuraLLM--Sakura-GalTransl-7B-v3.7", "blobs", "8f515bf4769f279a7fcf43e57446455a9d4de7f65b1bc9eddee76717e1ff7919"),
+    ocrModel: path.join(paddleSnapshot, "PaddleOCR-VL-1.6-GGUF.gguf"),
+    ocrMmproj: path.join(paddleSnapshot, "PaddleOCR-VL-1.6-GGUF-mmproj.gguf"),
     python: path.join(mangaTranslator, "runtime", "python.exe"),
     main: path.join(mangaTranslator, "main.py"),
     models: path.join(mangaTranslator, "models"),
@@ -97,18 +104,24 @@ export function mangaTranslatorModelPreset(assets: MangaTranslatorAssets): strin
     `[${SAKURA_MODEL_ALIAS}]`,
     `model = ${clean(assets.fallbackModel)}`,
     "",
+    `[${PADDLE_OCR_MODEL_ALIAS}]`,
+    `model = ${clean(assets.ocrModel)}`,
+    `mmproj = ${clean(assets.ocrMmproj)}`,
+    "ctx-size = 4096",
+    "",
   ].join("\n");
 }
 
 const BASE_TRANSLATION_INSTRUCTIONS = "For Simplified Chinese dialogue, never output Latin letters unless the source itself contains those exact Latin letters. Translate Japanese katakana loanwords by meaning into the established Chinese term; do not phonetically transliterate them. Translate ordinary Latin-script words into Chinese and retain only source-written short acronyms or proper names. Use Chinese punctuation and write ellipses as ……; never use consecutive ASCII periods for an ellipsis.";
 
-export function mangaTranslatorArgs(assets: MangaTranslatorAssets, input: string, output: string, batch: boolean, outsideText = false): string[] {
+export function mangaTranslatorArgs(assets: MangaTranslatorAssets, input: string, output: string, batch: boolean, outsideText = true): string[] {
   return [
     assets.main,
     "--input", input,
     "--output", output,
     ...(batch ? ["--batch"] : []),
     "--parallel-requests", "1",
+    ...(batch ? ["--batch-previous-context-texts", "3"] : []),
     "--provider", "OpenAI-Compatible",
     "--openai-compatible-url", `http://${HOST}:${PORT}/v1`,
     "--model-name", HY_MODEL_ALIAS,
@@ -125,7 +138,14 @@ export function mangaTranslatorArgs(assets: MangaTranslatorAssets, input: string
     BASE_TRANSLATION_INSTRUCTIONS,
     "--upscale-method", "none",
     "--vertical-font-size-mult", "1.15",
-    ...(outsideText ? ["--osb-enable", "--osb-text-free-only", "--osb-inpainting-method", "opencv"] : []),
+    ...(outsideText ? [
+      "--osb-enable",
+      "--osb-text-free-only",
+      "--osb-caption-only",
+      "--osb-inpainting-method", "opencv",
+      "--osb-auto-vertical-text",
+      "--osb-vertical-font-size-mult", "1.15",
+    ] : []),
     "--output-format", "png",
   ];
 }
@@ -149,6 +169,8 @@ export async function validateMangaTranslatorAssets(assets: MangaTranslatorAsset
     requireFile(assets.llamaServer, "MVP_LLAMA_SERVER_MISSING"),
     requireFile(assets.model, "MVP_TRANSLATION_MODEL_MISSING"),
     requireFile(assets.fallbackModel, "MVP_FALLBACK_MODEL_MISSING"),
+    requireFile(assets.ocrModel, "MVP_OCR_REVIEW_MODEL_MISSING"),
+    requireFile(assets.ocrMmproj, "MVP_OCR_REVIEW_MMPROJ_MISSING"),
     requireFile(assets.python, "MVP_PYTHON_RUNTIME_MISSING"),
     requireFile(assets.main, "MVP_MANGA_TRANSLATOR_MISSING"),
     requireDirectory(assets.models, "MVP_MANGA_MODELS_MISSING"),
@@ -323,9 +345,10 @@ function offlineEnvironment(assets: MangaTranslatorAssets): NodeJS.ProcessEnv {
 }
 
 export async function runMvpTranslate(config: LocalizerConfig, options: { inputPath: string; outputParent: string; outsideText?: boolean }): Promise<MvpTranslateResult> {
+  const captionOnly = options.outsideText !== false;
   const assets = defaultMangaTranslatorAssets();
   await validateMangaTranslatorAssets(assets);
-  if (options.outsideText) await validateOutsideTextDetector(assets);
+  if (captionOnly) await validateOutsideTextDetector(assets);
   const output = await createUniqueDirectory(options.outputParent, `translation-results-mvp-${safeSlug(path.basename(options.inputPath, path.extname(options.inputPath)))}`);
   const imagesDirectory = path.join(output.directory, "images");
   await mkdir(imagesDirectory);
@@ -349,7 +372,7 @@ export async function runMvpTranslate(config: LocalizerConfig, options: { inputP
     await waitForServer(server, ROUTER_PORT);
     proxy = await startHybridTranslationProxy({ upstreamBaseUrl: `http://${HOST}:${ROUTER_PORT}/`, port: PORT });
     const translatorOutput = mangaTranslatorOutputTarget(imagesDirectory, prepared.batch);
-    await runChild(assets.python, mangaTranslatorArgs(assets, prepared.path, translatorOutput, prepared.batch, options.outsideText), {
+    await runChild(assets.python, mangaTranslatorArgs(assets, prepared.path, translatorOutput, prepared.batch, captionOnly), {
       cwd: path.dirname(assets.main),
       env: offlineEnvironment(assets),
     });
@@ -360,15 +383,16 @@ export async function runMvpTranslate(config: LocalizerConfig, options: { inputP
     const packagedImages = await createMvpCbz(imagesDirectory, cbzPath);
     if (packagedImages !== outputImages) throw new LocalizerError("MVP_CBZ_PAGE_COUNT_MISMATCH", "CBZ page count does not match translated image count");
     report = {
-      schemaVersion: 4,
+      schemaVersion: 5,
       status: failedImages > 0 ? "partial" : "completed",
       startedAt,
       completedAt: new Date().toISOString(),
       inputKind: prepared.kind,
       outputImages,
       failedImages,
-      outsideTextMode: options.outsideText ? "text-free-opencv" : "disabled",
+      outsideTextMode: captionOnly ? "caption-only-opencv" : "disabled",
       engine: { pipeline: "MangaTranslator", translator: "Hy-MT2-7B-Q4_K_M", fallbackTranslator: "Sakura-GalTransl-7B-v3.7-IQ4_XS", ocr: "manga-ocr" },
+      chapterContext: { mode: "previous-ocr", previousOcrPages: 3, previousBilingualPages: 0 },
       sakuraFallbackRegions: proxy.metrics.fallbackRegions,
       sakuraFallbackFailures: proxy.metrics.fallbackFailures,
       cbz: "translated.cbz",
@@ -376,15 +400,16 @@ export async function runMvpTranslate(config: LocalizerConfig, options: { inputP
   } catch (error) {
     const failure = asLocalizerError(error, "MVP_TRANSLATION_FAILED");
     report = {
-      schemaVersion: 4,
+      schemaVersion: 5,
       status: "failed",
       startedAt,
       completedAt: new Date().toISOString(),
       inputKind: prepared?.kind ?? "unknown",
       outputImages: await countOutputImages(imagesDirectory).catch(() => 0),
       failedImages: await consumeFailureList(imagesDirectory).catch(() => 0),
-      outsideTextMode: options.outsideText ? "text-free-opencv" : "disabled",
+      outsideTextMode: captionOnly ? "caption-only-opencv" : "disabled",
       engine: { pipeline: "MangaTranslator", translator: "Hy-MT2-7B-Q4_K_M", fallbackTranslator: "Sakura-GalTransl-7B-v3.7-IQ4_XS", ocr: "manga-ocr" },
+      chapterContext: { mode: "previous-ocr", previousOcrPages: 3, previousBilingualPages: 0 },
       sakuraFallbackRegions: proxy?.metrics.fallbackRegions ?? 0,
       sakuraFallbackFailures: proxy?.metrics.fallbackFailures ?? 0,
       errorCode: failure.code,

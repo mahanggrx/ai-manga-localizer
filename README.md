@@ -38,17 +38,16 @@
 
 ## 使用
 
-当前建议先用个人 MVP 路线。它会自动启动本机 llama.cpp 单模型驻留路由，以 Hy-MT2 作为主译；当某个区域的中文候选仍含异常长英文时，才由 Sakura 对同页原文提供回退候选，并且只替换异常区域。处理完成后会停止模型服务。该路线支持单张图片、图片目录、ZIP 和 CBZ，不需要管理员权限，也不会联网或下载模型：
+当前建议先用个人 MVP 路线。它会自动启动本机 llama.cpp 单模型驻留路由，以 Hy-MT2 作为主译；批量处理时按页顺序携带最近 3 页 OCR 原文作为叙事上下文。Manga OCR 输出年份或完整日期形文本时，会先用同一路由中的 PaddleOCR-VL 1.6 对该区域复核，只有 Paddle 给出非日期形结果才替换。Hy 返回缺项或无效 JSON 时，整页自动改用 Sakura 的完整结果，避免把 `Missing item` 或空白气泡送入排字；单个区域出现异常长英文、残留日文、凭空出现的多位数字，或已验证的高风险身体/动作语义丢失时，也会由 Sakura 复译，但只替换异常区域。处理完成后会停止模型服务。该路线支持单张图片、图片目录、ZIP 和 CBZ，不需要管理员权限，也不会联网或下载模型：
 
 当前本机 MangaTranslator 安装已应用 [`patches/manga-translator-source-direction.patch`](patches/manga-translator-source-direction.patch)：普通气泡会按源文字框方向选择横排或竖排；竖排中文按从右到左的均衡多列布局渲染，使用竖排标点字形、较清晰的字距/列距和粗体对白，四列以上的密集气泡会自动增大列距。竖排时还会把省略号统一为六点，将逗号作为不显示的软换列点，并对短英文缩写使用纵中横式排法。重新安装 MangaTranslator 后，可在项目根目录运行 `git -C .local/manga-translator/MangaTranslator apply ../../../patches/manga-translator-source-direction.patch` 重新应用；已应用时不要重复运行。
 
 ```powershell
 node src/cli.ts translate-mvp C:/manga/chapter-01 --out C:/manga/output
 node src/cli.ts translate-mvp C:/manga/chapter-01.cbz --out C:/manga/output
-node src/cli.ts translate-mvp C:/manga/chapter-01 --out C:/manga/output --outside-text
 ```
 
-结果位于新建的 `translation-results-mvp-*` 目录，其中 `images/` 是逐页 PNG，`translated.cbz` 可直接放进漫画阅读器，`report.json` 记录完成、部分完成或失败状态，以及 Sakura 回退区域数和失败数。默认主要处理气泡文字。`--outside-text` 是实验选项：它会尝试翻译 RT-DETR 识别出的气泡外文字，但真实页面测试中会在封面或结构页产生大块错误修复，当前不要用于整本。原有 `translate` 命令继续作为实验性 Koharu 质量路线保留。
+结果位于新建的 `translation-results-mvp-*` 目录，其中 `images/` 是逐页 PNG，`translated.cbz` 可直接放进漫画阅读器，`report.json` 记录完成、部分完成或失败状态、章节上下文模式，以及 Sakura 回退区域数和失败数。默认会处理气泡文字，并自动补充翻译中等大小、白底干净的气泡外旁白；短拟声词、艺术字、封面标题和复杂背景文字仍保留原图。原有 `translate` 命令继续作为实验性 Koharu 质量路线保留。
 
 ```powershell
 node src/cli.ts doctor

@@ -3,16 +3,16 @@
   "$id": "https://local.invalid/schemas/mvp-report.schema.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "status", "startedAt", "completedAt", "inputKind", "outputImages", "failedImages", "outsideTextMode", "engine", "sakuraFallbackRegions", "sakuraFallbackFailures"],
+  "required": ["schemaVersion", "status", "startedAt", "completedAt", "inputKind", "outputImages", "failedImages", "outsideTextMode", "engine", "chapterContext", "sakuraFallbackRegions", "sakuraFallbackFailures"],
   "properties": {
-    "schemaVersion": { "const": 4 },
+    "schemaVersion": { "const": 5 },
     "status": { "enum": ["completed", "partial", "failed"] },
     "startedAt": { "type": "string", "minLength": 1 },
     "completedAt": { "type": "string", "minLength": 1 },
     "inputKind": { "enum": ["directory", "zip", "cbz", "image", "unknown"] },
     "outputImages": { "type": "integer", "minimum": 0 },
     "failedImages": { "type": "integer", "minimum": 0 },
-    "outsideTextMode": { "enum": ["disabled", "text-free-opencv"] },
+    "outsideTextMode": { "enum": ["disabled", "caption-only-opencv", "text-free-opencv"] },
     "engine": {
       "type": "object",
       "additionalProperties": false,
@@ -22,6 +22,16 @@
         "translator": { "const": "Hy-MT2-7B-Q4_K_M" },
         "fallbackTranslator": { "const": "Sakura-GalTransl-7B-v3.7-IQ4_XS" },
         "ocr": { "const": "manga-ocr" }
+      }
+    },
+    "chapterContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "previousOcrPages", "previousBilingualPages"],
+      "properties": {
+        "mode": { "const": "previous-ocr" },
+        "previousOcrPages": { "const": 3 },
+        "previousBilingualPages": { "const": 0 }
       }
     },
     "sakuraFallbackRegions": { "type": "integer", "minimum": 0 },

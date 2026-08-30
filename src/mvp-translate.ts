@@ -34,14 +34,14 @@ export interface MangaTranslatorAssets {
 }
 
 export interface MvpTranslateReport {
-  schemaVersion: 5;
+  schemaVersion: 6;
   status: "completed" | "partial" | "failed";
   startedAt: string;
   completedAt: string;
   inputKind: "directory" | "zip" | "cbz" | "image" | "unknown";
   outputImages: number;
   failedImages: number;
-  outsideTextMode: "disabled" | "caption-only-opencv" | "text-free-opencv";
+  outsideTextMode: "disabled" | "caption-story-masked-opencv" | "text-free-opencv";
   engine: { pipeline: "MangaTranslator"; translator: "Hy-MT2-7B-Q4_K_M"; fallbackTranslator: "Sakura-GalTransl-7B-v3.7-IQ4_XS"; ocr: "manga-ocr" };
   chapterContext: { mode: "previous-ocr"; previousOcrPages: 3; previousBilingualPages: 0 };
   sakuraFallbackRegions: number;
@@ -112,7 +112,7 @@ export function mangaTranslatorModelPreset(assets: MangaTranslatorAssets): strin
   ].join("\n");
 }
 
-const BASE_TRANSLATION_INSTRUCTIONS = "For Simplified Chinese dialogue, never output Latin letters unless the source itself contains those exact Latin letters. Translate Japanese katakana loanwords by meaning into the established Chinese term; do not phonetically transliterate them. Translate ordinary Latin-script words into Chinese and retain only source-written short acronyms or proper names. Use Chinese punctuation and write ellipses as ……; never use consecutive ASCII periods for an ellipsis.";
+const BASE_TRANSLATION_INSTRUCTIONS = "For Simplified Chinese dialogue, never output Latin letters unless the source itself contains those exact Latin letters. Translate Japanese katakana loanwords by meaning into the established Chinese term; do not phonetically transliterate them. Translate ordinary Latin-script words into Chinese and retain only source-written short acronyms or proper names. Preserve the source polarity, speaker, subject, object, action direction, relationship, and time relation; never turn a negation into an affirmation, swap I and you, or invent a named person. In adult dialogue, translate sexual actions explicitly and by their contextual meaning rather than a harmless literal homonym. Use Chinese punctuation and write ellipses as ……; never use consecutive ASCII periods for an ellipsis.";
 
 export function mangaTranslatorArgs(assets: MangaTranslatorAssets, input: string, output: string, batch: boolean, outsideText = true): string[] {
   return [
@@ -143,8 +143,12 @@ export function mangaTranslatorArgs(assets: MangaTranslatorAssets, input: string
       "--osb-text-free-only",
       "--osb-caption-only",
       "--osb-inpainting-method", "opencv",
+      "--osb-min-font-size", "6",
+      "--osb-max-font-size", "28",
+      "--osb-outline-width", "2",
       "--osb-auto-vertical-text",
-      "--osb-vertical-font-size-mult", "1.15",
+      "--osb-vertical-font-size-mult", "0.8",
+      "--osb-render-expansion-narrow", "1.4",
     ] : []),
     "--output-format", "png",
   ];
@@ -383,14 +387,14 @@ export async function runMvpTranslate(config: LocalizerConfig, options: { inputP
     const packagedImages = await createMvpCbz(imagesDirectory, cbzPath);
     if (packagedImages !== outputImages) throw new LocalizerError("MVP_CBZ_PAGE_COUNT_MISMATCH", "CBZ page count does not match translated image count");
     report = {
-      schemaVersion: 5,
+      schemaVersion: 6,
       status: failedImages > 0 ? "partial" : "completed",
       startedAt,
       completedAt: new Date().toISOString(),
       inputKind: prepared.kind,
       outputImages,
       failedImages,
-      outsideTextMode: captionOnly ? "caption-only-opencv" : "disabled",
+      outsideTextMode: captionOnly ? "caption-story-masked-opencv" : "disabled",
       engine: { pipeline: "MangaTranslator", translator: "Hy-MT2-7B-Q4_K_M", fallbackTranslator: "Sakura-GalTransl-7B-v3.7-IQ4_XS", ocr: "manga-ocr" },
       chapterContext: { mode: "previous-ocr", previousOcrPages: 3, previousBilingualPages: 0 },
       sakuraFallbackRegions: proxy.metrics.fallbackRegions,
@@ -400,14 +404,14 @@ export async function runMvpTranslate(config: LocalizerConfig, options: { inputP
   } catch (error) {
     const failure = asLocalizerError(error, "MVP_TRANSLATION_FAILED");
     report = {
-      schemaVersion: 5,
+      schemaVersion: 6,
       status: "failed",
       startedAt,
       completedAt: new Date().toISOString(),
       inputKind: prepared?.kind ?? "unknown",
       outputImages: await countOutputImages(imagesDirectory).catch(() => 0),
       failedImages: await consumeFailureList(imagesDirectory).catch(() => 0),
-      outsideTextMode: captionOnly ? "caption-only-opencv" : "disabled",
+      outsideTextMode: captionOnly ? "caption-story-masked-opencv" : "disabled",
       engine: { pipeline: "MangaTranslator", translator: "Hy-MT2-7B-Q4_K_M", fallbackTranslator: "Sakura-GalTransl-7B-v3.7-IQ4_XS", ocr: "manga-ocr" },
       chapterContext: { mode: "previous-ocr", previousOcrPages: 3, previousBilingualPages: 0 },
       sakuraFallbackRegions: proxy?.metrics.fallbackRegions ?? 0,

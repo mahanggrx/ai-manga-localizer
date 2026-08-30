@@ -11,24 +11,69 @@ index dac9ee2..56ba4bb 100644
      osb_max_font_size: int = 64
      osb_min_font_size: int = 10
 diff --git a/core/outside_text_processor.py b/core/outside_text_processor.py
-index 0566909..5f32167 100644
+index 0566909..933ede4 100644
 --- a/core/outside_text_processor.py
 +++ b/core/outside_text_processor.py
-@@ -34,6 +34,51 @@ OSB_COLOR_TOLERANCE = 15
+@@ -34,6 +34,121 @@ OSB_COLOR_TOLERANCE = 15
  OSB_EXPANSION_PX = 2
  OSB_WHITE_SNAP_THRESH = 245
  OSB_BLACK_SNAP_THRESH = 10
 +OSB_CAPTION_MIN_AREA_RATIO = 0.008
 +OSB_CAPTION_MAX_AREA_RATIO = 0.08
 +OSB_CAPTION_MIN_LIGHT_RING_RATIO = 0.90
++OSB_STORY_MAX_AREA_RATIO = 0.12
++OSB_STORY_MIN_CHARACTERS = 8
++OSB_CAPTION_MAX_REGIONS_PER_PAGE = 3
++OSB_STORY_GRAMMAR = re.compile(
++    r"(?:は|が|を|に|へ|で|と|も|から|まで|けど|ので|のに|って|ない|なく|たい|てる|てい|です|ます|だろ|かな|よね|んだ)"
++)
++
++
++def _merge_dense_story_regions(story_results):
++    """Merge adjacent vertical sentence boxes so one paragraph is lettered once."""
++    if len(story_results) < 2:
++        return story_results
++
++    ordered = sorted(story_results, key=lambda item: (item[0][0], item[0][1]))
++    groups = []
++    current = [ordered[0]]
++    for candidate in ordered[1:]:
++        previous = current[-1]
++        ax1, ay1, ax2, ay2 = [int(c) for c in previous[0]]
++        bx1, by1, bx2, by2 = [int(c) for c in candidate[0]]
++        overlap = max(0, min(ay2, by2) - max(ay1, by1))
++        overlap_ratio = overlap / max(1, min(ay2 - ay1, by2 - by1))
++        gap = max(0, bx1 - ax2)
++        close_gap = gap <= max(8, int(min(ax2 - ax1, bx2 - bx1) * 0.65))
++        if overlap_ratio >= 0.6 and close_gap:
++            current.append(candidate)
++        else:
++            groups.append(current)
++            current = [candidate]
++    groups.append(current)
++
++    merged = []
++    for group in groups:
++        if len(group) == 1:
++            merged.append(group[0])
++            continue
++        boxes = [item[0] for item in group]
++        merged.append(([
++            min(box[0] for box in boxes),
++            min(box[1] for box in boxes),
++            max(box[2] for box in boxes),
++            max(box[3] for box in boxes),
++        ], max(item[1] for item in group)))
++    return merged
 +
 +
 +def _filter_caption_like_regions(pil_image: Image.Image, outside_text_results):
-+    """Keep medium-sized text blocks surrounded by clean light page space."""
++    """Keep clean captions plus sentence-like text on complex backgrounds."""
 +    image_gray = np.asarray(pil_image.convert("L"))
 +    img_h, img_w = image_gray.shape
 +    image_area = float(img_w * img_h)
 +    caption_results = []
++    story_candidates = []
 +
 +    for bbox, conf in outside_text_results:
 +        raw_x1, raw_y1, raw_x2, raw_y2 = [int(c) for c in bbox]
@@ -39,7 +84,7 @@ index 0566909..5f32167 100644
 +        width = max(0, x2 - x1)
 +        height = max(0, y2 - y1)
 +        area_ratio = (width * height) / max(1.0, image_area)
-+        if not OSB_CAPTION_MIN_AREA_RATIO <= area_ratio <= OSB_CAPTION_MAX_AREA_RATIO:
++        if not OSB_CAPTION_MIN_AREA_RATIO <= area_ratio <= OSB_STORY_MAX_AREA_RATIO:
 +            continue
 +
 +        padding = max(8, int(min(width, height) * 0.25))
@@ -54,9 +99,34 @@ index 0566909..5f32167 100644
 +        if ring_pixels.size == 0:
 +            continue
 +        light_ratio = float(np.mean(ring_pixels >= 235))
-+        if light_ratio >= OSB_CAPTION_MIN_LIGHT_RING_RATIO:
++        if (
++            area_ratio <= OSB_CAPTION_MAX_AREA_RATIO
++            and light_ratio >= OSB_CAPTION_MIN_LIGHT_RING_RATIO
++        ):
 +            caption_results.append((bbox, conf))
++        else:
++            story_candidates.append((bbox, conf))
 +
++    if story_candidates:
++        story_crops = []
++        for bbox, _ in story_candidates:
++            x1, y1, x2, y2 = [int(c) for c in bbox]
++            story_crops.append(pil_image.crop((x1, y1, x2, y2)))
++        story_texts = extract_text_with_manga_ocr(story_crops, verbose=False)
++        story_results = []
++        for candidate, text in zip(story_candidates, story_texts):
++            compact = re.sub(r"\s+", "", text or "")
++            if (
++                len(compact) >= OSB_STORY_MIN_CHARACTERS
++                and OSB_STORY_GRAMMAR.search(compact)
++            ):
++                story_results.append(candidate)
++        if len(caption_results) + len(story_results) > OSB_CAPTION_MAX_REGIONS_PER_PAGE:
++            return []
++        caption_results.extend(_merge_dense_story_regions(story_results))
++
++    if len(caption_results) > OSB_CAPTION_MAX_REGIONS_PER_PAGE:
++        return []
 +    return caption_results
 +
 +
@@ -66,7 +136,7 @@ index 0566909..5f32167 100644
 
 
  @dataclass
-@@ -254,6 +299,24 @@ def prepare_outside_text_work(
+@@ -254,6 +369,24 @@ def prepare_outside_text_work(
 
          img_w, img_h = pil_image.size
 
@@ -91,13 +161,40 @@ index 0566909..5f32167 100644
          min_ignore = max(0.0, min(0.05, config.outside_text.min_area_ignore_ratio))
          if min_ignore > 0.0:
              image_area = float(img_w * img_h)
+@@ -962,6 +1095,26 @@ def finish_outside_text_work(
+                             verbose=verbose,
+                         )
+                         continue
++
++                    if (
++                        inpainting_method == "opencv"
++                        and config.outside_text.osb_caption_only
++                    ):
++                        source_cv = pil_to_cv2(current_image)
++                        text_mask = (combined_mask.astype(np.uint8) * 255)
++                        text_mask = cv2.dilate(
++                            text_mask, np.ones((3, 3), np.uint8), iterations=1
++                        )
++                        inpainted_cv = cv2.inpaint(
++                            source_cv, text_mask, 3, cv2.INPAINT_TELEA
++                        )
++                        current_image = cv2_to_pil(inpainted_cv)
++                        cv2_inpaints += 1
++                        log_message(
++                            "Using masked OpenCV inpaint for caption/story OSB region",
++                            verbose=verbose,
++                        )
++                        continue
+                     region_seed = base_seed + i if base_seed > 0 else base_seed
+
+                     original_bbox_dict = group.get("original_bbox")
 diff --git a/core/pipeline.py b/core/pipeline.py
 index cd083fb..fb7a929 100644
 --- a/core/pipeline.py
 +++ b/core/pipeline.py
 @@ -7,6 +7,7 @@ import threading
  import time
- from collections import OrderedDic
+ from collections import OrderedDict
  from concurrent.futures import ThreadPoolExecutor
 +from dataclasses import replace
  from pathlib import Path
@@ -160,7 +257,7 @@ index cd083fb..fb7a929 100644
 +    result = page_image.copy()
 +    mask_image = Image.fromarray((layer_mask * 255).astype(np.uint8))
 +    result.paste(layer_image.convert(result.mode), (0, 0), mask_image)
-+    return resul
++    return result
 +
 +
 +def _scaled_collision_config(config: RenderingConfig, scale: float) -> RenderingConfig:
@@ -218,7 +315,7 @@ index cd083fb..fb7a929 100644
 +        first_root = find(first)
 +        second_root = find(second)
 +        if first_root != second_root:
-+            parents[second_root] = first_roo
++            parents[second_root] = first_root
 +
 +    for first_index, first_bubble in enumerate(bubbles):
 +        if first_bubble.get("is_outside_text", False):
@@ -280,7 +377,7 @@ index cd083fb..fb7a929 100644
 +            continue
 +
 +        # Keep each detected text block in its own geometry.  A conjoined
-+        # relation is a typography/collision group, not permission to inven
++        # relation is a typography/collision group, not permission to invent
 +        # a rectangular union bubble: the union can extend into page artwork.
 +        group_id = f"conjoined-{shared_group_number}"
 +        shared_group_number += 1
@@ -392,7 +489,7 @@ index cd083fb..fb7a929 100644
 +            member_vertical_stack,
 +        ) in enumerate(render_members):
 +            size_multiplier = (
-+                render_config.vertical_font_size_mul
++                render_config.vertical_font_size_mult
 +                if member_vertical_stack
 +                else 1.0
 +            )
@@ -490,7 +587,7 @@ index cd083fb..fb7a929 100644
 -                    for i, bubble in enumerate(sorted_bubble_data):
 -                        bubble["translation"] = translated_texts[i]
 +                    for i, (bubble, translated_text) in enumerate(render_items):
-+                        bubble["translation"] = translated_tex
++                        bubble["translation"] = translated_text
                          bbox = bubble["bbox"]
                          text = bubble.get("translation", "")
                          is_outside_text = bubble.get("is_outside_text", False)
@@ -510,8 +607,8 @@ index cd083fb..fb7a929 100644
                              text_bg_rgb = None
                              if bubble.get("needs_text_background"):
 @@ -1646,7 +2012,7 @@ def translate_and_render(
-                             max_font = main_max_fon
-                             line_spacing = config.rendering.line_spacing_mul
+                             max_font = main_max_font
+                             line_spacing = config.rendering.line_spacing_mult
                              use_ligs = config.rendering.use_ligatures
 -                            render_info = bubble_render_info_map.get(tuple(bbox))
 +                            render_info = bubble.get("_render_info") or bubble_render_info_map.get(tuple(bbox))
@@ -529,7 +626,7 @@ index cd083fb..fb7a929 100644
 
                          # Latin languages use hyphenation; Korean/Thai use
 @@ -1723,6 +2088,44 @@ def translate_and_render(
-                                 else config.rendering.vertical_font_size_mul
+                                 else config.rendering.vertical_font_size_mult
                              ),
                          )
 +                        shared_group_id = bubble.get("_shared_group_id")
@@ -554,7 +651,7 @@ index cd083fb..fb7a929 100644
 +                            if shared_font_size is not None:
 +                                shared_group_has_common_size = True
 +                                size_multiplier = (
-+                                    render_config.vertical_font_size_mul
++                                    render_config.vertical_font_size_mult
 +                                    if vertical_stack
 +                                    else 1.0
 +                                )
@@ -687,7 +784,7 @@ index 18e227e..d982f56 100644
  import base64
  import json
  import re
-+import urllib.reques
++import urllib.request
  from io import BytesIO
  from typing import Any, Dict, List, Optional
 
@@ -735,7 +832,7 @@ index 18e227e..d982f56 100644
 +        if index < len(bubble_metadata)
 +        and bubble_metadata[index].get("is_outside_text", False)
 +    )
-+    bubble_count = len(extracted_texts) - outside_coun
++    bubble_count = len(extracted_texts) - outside_count
 +    log_message(
 +        f"OCR completed: {len(extracted_texts)} region(s) "
 +        f"({bubble_count} bubble, {outside_count} outside-text)",
@@ -750,11 +847,11 @@ index 18e227e..d982f56 100644
 
 -    log_message(f"Raw response:\n---\n{response_text}\n---", always_print=True)
 -
-     # Strip markdown code fences if presen
+     # Strip markdown code fences if present
      cleaned = response_text.strip()
      if cleaned.startswith("```"):
 @@ -1380,7 +1373,149 @@ def _build_hy_mt2_prompt(
-     return promp
+     return prompt
 
 
 +def _repair_hy_mt2_unexpected_latin(
@@ -825,7 +922,7 @@ index 18e227e..d982f56 100644
 +        candidate = repaired[repair_index].strip()
 +        if candidate and not re.search(r"[A-Za-z]{3,}", candidate):
 +            result[original_index] = candidate
-+    return resul
++    return result
 +
 +
 +_SUSPICIOUS_OCR_CALENDAR = re.compile(
@@ -895,7 +992,7 @@ index 18e227e..d982f56 100644
 +            f"accepted {accepted}",
 +            verbose=debug,
 +        )
-+    return resul
++    return result
 +
 +
  def _perform_manga_ocr(
@@ -1017,7 +1114,7 @@ index 39502e9..67c7b3a 100644
 +                        "column_offset_x", 0.0
 +                    )
 +                    column_block_height = line_data.get(
-+                        "column_block_height", block_heigh
++                        "column_block_height", block_height
 +                    )
 +                    block_top_y = target_center_y - column_block_height / 2.0
 +                    baseline_x = column_center_x - (left + right) / 2.0
@@ -1170,10 +1267,10 @@ index d4a7d97..f2dc56d 100644
 -            advance_height * line_spacing_mult * VERTICAL_ADVANCE_TRACKING,
 -        )
 -
--        unit["advance_height"] = advance_heigh
+-        unit["advance_height"] = advance_height
 -        unit["origin_y"] = current_y + unit.get("baseline_offset_y", 0.0)
 -        if index == len(lines_data_at_size) - 1:
--            current_y += advance_heigh
+-            current_y += advance_height
 +    def _position_column(column: List[Dict]) -> float:
 +        current_y = 0.0
 +        for index, unit in enumerate(column):
@@ -1182,9 +1279,9 @@ index d4a7d97..f2dc56d 100644
 +                unit["height"],
 +                advance_height * line_spacing_mult * VERTICAL_ADVANCE_TRACKING,
 +            )
-+            unit["advance_height"] = advance_heigh
++            unit["advance_height"] = advance_height
 +            unit["origin_y"] = current_y + unit.get("baseline_offset_y", 0.0)
-+            current_y += advance_height if index == len(column) - 1 else step_heigh
++            current_y += advance_height if index == len(column) - 1 else step_height
 +
 +        visual_top = min(unit["origin_y"] + unit["top"] for unit in column)
 +        visual_bottom = max(unit["origin_y"] + unit["bottom"] for unit in column)
@@ -1204,7 +1301,7 @@ index d4a7d97..f2dc56d 100644
 +            greedy_columns.append(current_column)
 +            current_column = [unit]
          else:
--            current_y += step_heigh
+-            current_y += step_height
 +            current_column = candidate
 +        if _position_column(current_column) > max_render_height:
 +            return None
@@ -1226,9 +1323,9 @@ index d4a7d97..f2dc56d 100644
 -    visual_top = min(unit["origin_y"] + unit["top"] for unit in lines_data_at_size)
 -    visual_bottom = max(
 -        unit["origin_y"] + unit["bottom"] for unit in lines_data_at_size
-+        remaining_units = len(lines_data_at_size) - offse
++        remaining_units = len(lines_data_at_size) - offset
 +        ideal_count = max(1, round(remaining_units / remaining_columns))
-+        ideal_end = offset + ideal_coun
++        ideal_end = offset + ideal_count
 +        maximum_end = len(lines_data_at_size) - (remaining_columns - 1)
 +        soft_ends = [
 +            end
@@ -1266,7 +1363,7 @@ index d4a7d97..f2dc56d 100644
 +                following.insert(0, current.pop())
 +
 +    if all(
-+        column and _position_column(column) <= max_render_heigh
++        column and _position_column(column) <= max_render_height
 +        for column in balanced_columns
 +    ):
 +        columns = balanced_columns
@@ -1301,7 +1398,7 @@ index d4a7d97..f2dc56d 100644
 +        for unit in column:
 +            unit["column_index"] = column_index
 +            unit["column_offset_x"] = column_offset_x
-+            unit["column_block_height"] = column_heigh
++            unit["column_block_height"] = column_height
 +        right_edge -= column_width + column_gap
 +
 +    if block_width <= max_render_width and block_height <= max_render_height:

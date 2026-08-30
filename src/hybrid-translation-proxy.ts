@@ -17,8 +17,19 @@ const EJACULATION_SOURCE = /(?:射精|精液|ザーメン|中出し|ぶっかけ
 const EJACULATION_TARGET = /(?:射精|精液|体液|内射|中出|喷射|喷出)/u;
 const RELEASE_SOUND_SOURCE = /(?:ビュ|びゅ|ピュ|ぴゅ|ビャ|びゃ)(?:ー?(?:ビュ|びゅ|ピュ|ぴゅ|ビャ|びゃ))?[^。！？]{0,8}(?:出|で)/u;
 const RELEASE_TARGET = /(?:射|喷|迸|涌|流|出来)/u;
+const SEXUAL_RELEASE_TARGET = /(?:射|喷|释放|泄|高潮)/u;
 const ORAL_SOURCE = /(?:しゃぶ|咥え|舐め|吸っ)/u;
 const ORAL_TARGET = /(?:口交|吸|舔|含|吮|舌)/u;
+const FLACCID_SOURCE = /(?:萎え|萎えて|萎えた)/u;
+const FLACCID_TARGET = /(?:软|疲软|萎|没硬|不硬)/u;
+const ABSORBED_SOURCE = /夢中(?:で|に|だ|な)/u;
+const DREAM_TARGET = /梦(?:里|中|境)/u;
+const WAIT_PREPARATION_SOURCE = /準備[^。！？]{0,16}(?:待って|待っ)/u;
+const PREPARED_ALREADY_TARGET = /(?:已经|早就).{0,8}(?:准备|弄好)|准备好了/u;
+const HOLD_LEGS_INSERT_SOURCE = /足[^。！？]{0,12}(?:持|も)[^。！？]{0,12}(?:挿|入れ)/u;
+const USE_FEET_INSERT_TARGET = /用脚.{0,12}(?:插|塞|放)/u;
+const HOLD_LEGS_TARGET = /(?:(?:抓|握|扶|抱|托|拿|按|固定)(?:住|着)?(?:腿|脚)|(?:腿|脚).{0,6}(?:抓|握|扶|抱|托|拿|按|固定))/u;
+const RELEASE_PERMISSION_SOURCE = /我慢でき[^。！？]{0,12}出して(?:いい|ええ|も)/u;
 export const HY_MODEL_ALIAS = "hy-mt2-local";
 export const SAKURA_MODEL_ALIAS = "sakura-galtransl-local";
 
@@ -136,6 +147,11 @@ function fallbackReason(source: string, translated: string): string | undefined 
   if (EJACULATION_SOURCE.test(source) && !EJACULATION_TARGET.test(translated)) return "lost-ejaculation";
   if (RELEASE_SOUND_SOURCE.test(source) && !RELEASE_TARGET.test(translated)) return "lost-release-action";
   if (ORAL_SOURCE.test(source) && !ORAL_TARGET.test(translated)) return "lost-oral-action";
+  if (FLACCID_SOURCE.test(source) && !FLACCID_TARGET.test(translated)) return "lost-flaccid-state";
+  if (ABSORBED_SOURCE.test(source) && DREAM_TARGET.test(translated)) return "absorbed-as-dream";
+  if (WAIT_PREPARATION_SOURCE.test(source) && PREPARED_ALREADY_TARGET.test(translated)) return "preparation-time-reversed";
+  if (HOLD_LEGS_INSERT_SOURCE.test(source) && (USE_FEET_INSERT_TARGET.test(translated) || !HOLD_LEGS_TARGET.test(translated))) return "leg-action-reversed";
+  if (RELEASE_PERMISSION_SOURCE.test(source) && !SEXUAL_RELEASE_TARGET.test(translated)) return "lost-release-permission";
   return undefined;
 }
 
@@ -147,7 +163,21 @@ function validFallbackForReason(source: string, translated: string, reason: stri
   if (reason === "lost-ejaculation") return EJACULATION_TARGET.test(translated);
   if (reason === "lost-release-action") return RELEASE_TARGET.test(translated);
   if (reason === "lost-oral-action") return ORAL_TARGET.test(translated);
+  if (reason === "lost-flaccid-state") return FLACCID_TARGET.test(translated);
+  if (reason === "absorbed-as-dream") return !DREAM_TARGET.test(translated);
+  if (reason === "preparation-time-reversed") return !PREPARED_ALREADY_TARGET.test(translated);
+  if (reason === "leg-action-reversed") return HOLD_LEGS_TARGET.test(translated) && !USE_FEET_INSERT_TARGET.test(translated);
+  if (reason === "lost-release-permission") return SEXUAL_RELEASE_TARGET.test(translated);
   return true;
+}
+
+function repairLegHoldTranslation(source: string, translated: string): string {
+  if (!HOLD_LEGS_INSERT_SOURCE.test(source) || HOLD_LEGS_TARGET.test(translated)) return translated;
+  return translated
+    .replace(/把脚抬起来(?:再)?把/u, "抓住腿，再把")
+    .replace(/把脚抬起来(?:再)?/u, "抓住腿，再")
+    .replace(/用脚把/u, "抓住腿，再把")
+    .replace(/用脚/u, "抓住腿，再");
 }
 
 async function postJson(upstream: URL, body: JsonRecord): Promise<{ status: number; headers: Headers; bytes: Buffer; value?: JsonRecord }> {
@@ -187,12 +217,23 @@ async function handleCompletion(request: IncomingMessage, response: ServerRespon
   const parsedKeys = parsed ? Object.keys(parsed.translations) : [];
   const protocolInvalid = !parsed || sourceKeys.length !== parsedKeys.length || sourceKeys.some((key, index) => parsedKeys[index] !== key);
   const validParsed = protocolInvalid ? undefined : parsed;
+  let deterministicRepairApplied = false;
+  if (validParsed) {
+    for (const [key, translated] of Object.entries(validParsed.translations)) {
+      const repaired = repairLegHoldTranslation(sourceMap[key] ?? "", translated);
+      if (repaired !== translated) {
+        validParsed.translations[key] = repaired;
+        deterministicRepairApplied = true;
+      }
+    }
+    if (deterministicRepairApplied) validParsed.message.content = JSON.stringify(validParsed.translations);
+  }
   const flagged = !validParsed ? sourceKeys.map((key) => ({ key, reason: "protocol-invalid" })) : Object.entries(validParsed.translations).map(([key, translated]) => ({
     key,
     reason: fallbackReason(sourceMap[key] ?? "", translated),
   })).filter((item): item is { key: string; reason: string } => typeof item.reason === "string");
   if (flagged.length === 0) {
-    send(response, primary.status, primary.bytes);
+    send(response, primary.status, deterministicRepairApplied ? Buffer.from(JSON.stringify(outputCompletion)) : primary.bytes);
     return;
   }
   metrics.fallbackRequests += 1;

@@ -457,3 +457,55 @@ test("hybrid proxy repairs release onomatopoeia that the primary route mistakes 
   assert.deepEqual(JSON.parse(completion.choices[0].message.content), { "1": "刚才喷得到处都是", "2": "一下子射出来了" });
   assert.deepEqual(proxy.metrics, { primaryRequests: 1, fallbackRequests: 1, fallbackRegions: 2, fallbackFailures: 0 });
 });
+
+test("hybrid proxy repairs observed state, time, and action-direction reversals", async (context) => {
+  const upstream = createServer(async (request, response) => {
+    const body = await readJson(request);
+    const content = body.model === SAKURA_MODEL_ALIAS
+      ? [
+        "把软下来的阴茎塞进去",
+        "正专心地含着",
+        "我还要准备一下，你先等会儿",
+        "抓住腿，再把阴茎插进去",
+        "忍不住的话就射出来吧",
+      ].join("\n")
+      : JSON.stringify({
+        "1": "把已经射掉的阴茎塞进去",
+        "2": "在梦里含着",
+        "3": "已经准备好了",
+        "4": "把脚抬起来再插进去",
+        "5": "忍不住的话就拿出来吧",
+      });
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ choices: [{ message: { content } }] }));
+  });
+  await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  context.after(() => upstream.close());
+  const upstreamAddress = upstream.address();
+  assert.ok(upstreamAddress && typeof upstreamAddress === "object");
+  const proxy = await startHybridTranslationProxy({ upstreamBaseUrl: `http://127.0.0.1:${upstreamAddress.port}/`, port: 0 });
+  context.after(() => proxy.server.close());
+  const proxyAddress = proxy.server.address();
+  assert.ok(proxyAddress && typeof proxyAddress === "object");
+  const sources = {
+    "1": "萎えてるちんぽを隙間から入れて",
+    "2": "夢中で咥えている",
+    "3": "準備あるからちょっと待っててね",
+    "4": "足もってちんぽ挿れてみよか",
+    "5": "我慢できんかったら出していい",
+  };
+  const response = await fetch(`http://127.0.0.1:${proxyAddress.port}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: HY_MODEL_ALIAS, messages: [{ role: "user", content: `Translate:\n${JSON.stringify(sources)}` }] }),
+  });
+  const completion = await response.json() as { choices: Array<{ message: { content: string } }> };
+  assert.deepEqual(JSON.parse(completion.choices[0].message.content), {
+    "1": "把软下来的阴茎塞进去",
+    "2": "正专心地含着",
+    "3": "我还要准备一下，你先等会儿",
+    "4": "抓住腿，再插进去",
+    "5": "忍不住的话就射出来吧",
+  });
+  assert.deepEqual(proxy.metrics, { primaryRequests: 1, fallbackRequests: 1, fallbackRegions: 4, fallbackFailures: 0 });
+});

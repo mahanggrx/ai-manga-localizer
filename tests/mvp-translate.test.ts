@@ -33,6 +33,7 @@ test("MVP command uses the local Hy-MT2 server and offline MangaTranslator path"
   assert.match(instructions, /never output Latin letters unless the source itself contains/u);
   assert.match(instructions, /Japanese katakana loanwords/u);
   assert.match(instructions, /do not phonetically transliterate/u);
+  assert.match(instructions, /Preserve the source polarity, speaker, subject, object/u);
   assert.match(instructions, /……/u);
   assert.equal(args[args.indexOf("--output-language") + 1], "Chinese (Simplified)");
   assert.equal(args.some((value) => /^https:/u.test(value)), false);
@@ -41,7 +42,7 @@ test("MVP command uses the local Hy-MT2 server and offline MangaTranslator path"
   assert.equal(path.basename(assets.python).toLowerCase(), "python.exe");
 });
 
-test("default MVP mode uses only caption-like RT-DETR text_free detections with OpenCV inpainting", () => {
+test("default MVP mode uses caption and story-like RT-DETR text_free detections with masked OpenCV inpainting", () => {
   const assets = defaultMangaTranslatorAssets("C:/repo");
   const args = mangaTranslatorArgs(assets, "C:/input", "C:/output", true, true);
   assert.ok(args.includes("--osb-enable"));
@@ -49,7 +50,11 @@ test("default MVP mode uses only caption-like RT-DETR text_free detections with 
   assert.ok(args.includes("--osb-caption-only"));
   assert.ok(args.includes("--osb-auto-vertical-text"));
   assert.equal(args[args.indexOf("--osb-inpainting-method") + 1], "opencv");
-  assert.equal(args[args.indexOf("--osb-vertical-font-size-mult") + 1], "1.15");
+  assert.equal(args[args.indexOf("--osb-min-font-size") + 1], "6");
+  assert.equal(args[args.indexOf("--osb-max-font-size") + 1], "28");
+  assert.equal(args[args.indexOf("--osb-outline-width") + 1], "2");
+  assert.equal(args[args.indexOf("--osb-vertical-font-size-mult") + 1], "0.8");
+  assert.equal(args[args.indexOf("--osb-render-expansion-narrow") + 1], "1.4");
 });
 
 test("single-image MVP invocation does not enable batch mode", () => {
@@ -77,14 +82,14 @@ test("MVP packages translated images into a naturally ordered CBZ", async () => 
 
 test("MVP report satisfies its public schema", async () => {
   await assert.doesNotReject(() => assertSchema("mvp-report.schema.json", {
-    schemaVersion: 5,
+    schemaVersion: 6,
     status: "completed",
     startedAt: new Date(0).toISOString(),
     completedAt: new Date(1).toISOString(),
     inputKind: "directory",
     outputImages: 3,
     failedImages: 0,
-    outsideTextMode: "caption-only-opencv",
+    outsideTextMode: "caption-story-masked-opencv",
     engine: { pipeline: "MangaTranslator", translator: "Hy-MT2-7B-Q4_K_M", fallbackTranslator: "Sakura-GalTransl-7B-v3.7-IQ4_XS", ocr: "manga-ocr" },
     chapterContext: { mode: "previous-ocr", previousOcrPages: 3, previousBilingualPages: 0 },
     sakuraFallbackRegions: 1,

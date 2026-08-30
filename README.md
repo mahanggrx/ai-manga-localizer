@@ -47,7 +47,7 @@ node src/cli.ts translate-mvp C:/manga/chapter-01 --out C:/manga/output
 node src/cli.ts translate-mvp C:/manga/chapter-01.cbz --out C:/manga/output
 ```
 
-结果位于新建的 `translation-results-mvp-*` 目录，其中 `images/` 是逐页 PNG，`translated.cbz` 可直接放进漫画阅读器，`report.json` 记录完成、部分完成或失败状态、章节上下文模式，以及 Sakura 回退区域数和失败数。默认会处理气泡文字，并自动补充翻译中等大小、白底干净的气泡外旁白；短拟声词、艺术字、封面标题和复杂背景文字仍保留原图。原有 `translate` 命令继续作为实验性 Koharu 质量路线保留。
+结果位于新建的 `translation-results-mvp-*` 目录，其中 `images/` 是逐页 PNG，`translated.cbz` 可直接放进漫画阅读器，`report.json` 记录完成、部分完成或失败状态、章节上下文模式，以及 Sakura 回退区域数和失败数。默认会处理气泡文字、白底旁白，以及 OCR 判断为完整句子的气泡外剧情文字；复杂背景只按文字蒙版进行局部修复并使用描边排字，不再清空整块矩形。单页气泡外候选过多时会保留这些原文，避免密集多列排字互相覆盖。短拟声词、艺术字和封面标题仍保留原图。原有 `translate` 命令继续作为实验性 Koharu 质量路线保留。
 
 ```powershell
 node src/cli.ts doctor

@@ -5,14 +5,14 @@
   "additionalProperties": false,
   "required": ["schemaVersion", "status", "startedAt", "completedAt", "inputKind", "outputImages", "failedImages", "outsideTextMode", "engine", "chapterContext", "sakuraFallbackRegions", "sakuraFallbackFailures"],
   "properties": {
-    "schemaVersion": { "const": 5 },
+    "schemaVersion": { "const": 6 },
     "status": { "enum": ["completed", "partial", "failed"] },
     "startedAt": { "type": "string", "minLength": 1 },
     "completedAt": { "type": "string", "minLength": 1 },
     "inputKind": { "enum": ["directory", "zip", "cbz", "image", "unknown"] },
     "outputImages": { "type": "integer", "minimum": 0 },
     "failedImages": { "type": "integer", "minimum": 0 },
-    "outsideTextMode": { "enum": ["disabled", "caption-only-opencv", "text-free-opencv"] },
+    "outsideTextMode": { "enum": ["disabled", "caption-story-masked-opencv", "text-free-opencv"] },
     "engine": {
       "type": "object",
       "additionalProperties": false,
